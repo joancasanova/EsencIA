@@ -1,6 +1,6 @@
-# AutoAumento: Guía de Uso
+# EsencIA: Guía de Uso
 
-**AutoAumento** es una aplicación de línea de comandos (CLI) en Python diseñada para realizar tareas avanzadas de procesamiento de texto utilizando modelos de lenguaje (LLMs). Esta guía se enfoca en la utilización de los comandos `pipeline` y `benchmark`, explicando cómo ejecutarlos paso a paso y cómo interpretar los archivos de salida.
+**EsencIA** es una aplicación de línea de comandos (CLI) en Python diseñada para realizar tareas avanzadas de procesamiento de texto utilizando modelos de lenguaje (LLMs). Esta guía se enfoca en la utilización de los comandos `pipeline` y `benchmark`, explicando cómo ejecutarlos paso a paso y cómo interpretar los archivos de salida.
 
 ## Tabla de Contenidos
 
@@ -21,7 +21,7 @@
 
 ## Introducción
 
-AutoAumento ofrece una serie de comandos para interactuar con LLMs, entre ellos:
+EsencIA ofrece una serie de comandos para interactuar con LLMs, entre ellos:
 
 -   `generate`: Genera texto utilizando un LLM.
 -   `parse`: Analiza texto y extrae información estructurada.
@@ -36,8 +36,8 @@ Esta guía se centrará en los dos últimos comandos, `pipeline` y `benchmark`, 
 1. **Clonar el repositorio**:
 
     ```bash
-    git clone https://github.com/tu-usuario/autoaumento.git
-    cd autoaumento
+    git clone https://github.com/tu-usuario/EsencIA.git
+    cd EsencIA
     ```
 
 2. **Crear y activar un entorno virtual** (recomendable):
@@ -477,4 +477,4 @@ Este archivo contiene una lista de los casos mal clasificados. Cada entrada tien
 
 ## Conclusión
 
-Esta guía ha proporcionado una descripción detallada de cómo utilizar los comandos `pipeline` y `benchmark` de AutoAumento. Con esta información, podrá ejecutar pipelines de procesamiento de texto personalizados y evaluar su rendimiento en conjuntos de datos de prueba. Recuerde consultar el `README.md` original para obtener información sobre los comandos `generate`, `parse` y `verify`, así como sobre la estructura general del proyecto.
+Esta guía ha proporcionado una descripción detallada de cómo utilizar los comandos `pipeline` y `benchmark` de EsencIA. Con esta información, podrá ejecutar pipelines de procesamiento de texto personalizados y evaluar su rendimiento en conjuntos de datos de prueba. Recuerde consultar el `README.md` original para obtener información sobre los comandos `generate`, `parse` y `verify`, así como sobre la estructura general del proyecto.
