@@ -1,4 +1,4 @@
-# domain/model/entities/verification.py
+# src/domain/model/entities/verification.py
 
 from dataclasses import dataclass
 from typing import List, Optional, Dict

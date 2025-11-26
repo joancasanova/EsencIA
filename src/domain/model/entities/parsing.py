@@ -1,4 +1,4 @@
-# domain/model/entities/parsing.py
+# src/domain/model/entities/parsing.py
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Literal

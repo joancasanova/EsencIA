@@ -1,4 +1,4 @@
-# domain/model/entities/benchmark.py
+# src/domain/model/entities/benchmark.py
 
 from dataclasses import dataclass
 from datetime import datetime

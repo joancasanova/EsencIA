@@ -1,4 +1,4 @@
-# app/domain/model/entities/pipeline.py
+# src/domain/model/entities/pipeline.py
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
