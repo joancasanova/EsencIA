@@ -2,6 +2,7 @@
    "steps":[
       {
           "type": "generate",
+          "llm_name": "Qwen/Qwen2.5-0.5B-Instruct",
           "parameters": {
               "system_prompt": "Eres un asistente experto en {tema}. Tus respuestas siempre están estructuradas del siguiente modo: Contenido: 'contenido'\nPor ejemplo:\nContenido: 'Este {tema} es complejo'",
               "user_prompt": "Genera una descripción de {tema} siguiendo el formato indicado.",

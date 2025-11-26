@@ -1,6 +1,5 @@
 # application/use_cases/pipeline_use_case.py
 
-import json
 import logging
 from typing import List
 
@@ -22,19 +21,16 @@ class PipelineUseCase:
     """
 
     def __init__(self, 
-                 generation_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct", 
-                 verify_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+                 default_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
         """
         Initializes pipeline components with model configurations.
         
         Args:
             generation_model_name: Model identifier for text generation
-            verify_model_name: Model identifier for verification tasks
         """
-        self.service = PipelineService(generation_model_name, verify_model_name)
+        self.service = PipelineService(default_model_name)
         self.file_repo = FileRepository()
-        logger.debug("Initialized PipelineUseCase with models: %s (gen), %s (verify)",
-                    generation_model_name, verify_model_name)
+        logger.debug("Initialized PipelineUseCase with model: %s (gen)", default_model_name)
 
     def _execute(self, request: PipelineRequest) -> PipelineResponse:
         """

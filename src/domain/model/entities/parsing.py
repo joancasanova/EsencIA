@@ -11,9 +11,11 @@ class ParseMode(Enum):
     Options:
         REGEX: Uses regular expressions for pattern matching. Ideal for structured text patterns.
         KEYWORD: Uses keyword search with boundary detection. Effective for free-form text extraction.
+        JSON: Uses JSON path expressions for extracting data from JSON structures.
     """
     REGEX = "regex"
     KEYWORD = "keyword"
+    JSON = "json"
 
 @dataclass(frozen=True)
 class ParseMatch:
