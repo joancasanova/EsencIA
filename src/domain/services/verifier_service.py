@@ -1,4 +1,4 @@
-# src/domain/services/verifier_service.py
+# domain/services/verifier_service.py
 
 import logging
 from typing import List

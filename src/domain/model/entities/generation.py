@@ -1,4 +1,4 @@
-# src/domain/model/entities/generation.py
+# domain/model/entities/generation.py
 
 from dataclasses import dataclass
 from datetime import datetime

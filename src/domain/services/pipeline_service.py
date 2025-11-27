@@ -1,4 +1,4 @@
-# src/domain/services/pipeline_service.py
+# domain/services/pipeline_service.py
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 import re

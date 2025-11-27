@@ -1,4 +1,4 @@
-# src/domain/services/generate_service.py
+# domain/services/generate_service.py
 
 import logging
 import re

@@ -1,4 +1,4 @@
-# src/application/use_cases/pipeline_use_case.py
+# application/use_cases/pipeline_use_case.py
 
 import logging
 from typing import List

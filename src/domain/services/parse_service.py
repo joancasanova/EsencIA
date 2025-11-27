@@ -1,11 +1,10 @@
-# src/domain/services/parse_service.py
+# domain/services/parse_service.py
 
 import json
 import logging
 import re
 from typing import List, Dict, Optional, Literal
 from domain.model.entities.parsing import ParseResult, ParseRule, ParseMode
-from utils.json_utils import extract_json_from_response
 
 logger = logging.getLogger(__name__)
 

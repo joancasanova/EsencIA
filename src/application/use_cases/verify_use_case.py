@@ -1,4 +1,4 @@
-# src/application/use_cases/verify_use_case.py
+# application/use_cases/verify_use_case.py
 
 import logging
 from datetime import datetime

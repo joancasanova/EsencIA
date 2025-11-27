@@ -1,4 +1,4 @@
-# src/application/use_cases/parse_use_case.py
+# application/use_cases/parse_use_case.py
 
 import logging
 from domain.model.entities.parsing import ParseRequest, ParseResponse
