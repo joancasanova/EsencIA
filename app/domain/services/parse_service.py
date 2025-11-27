@@ -1,6 +1,5 @@
 # domain/services/parse_service.py
 
-import json
 import logging
 import re
 from typing import List, Dict, Optional, Literal
@@ -147,25 +146,6 @@ class ParseService:
                 
                 # Move search window forward
                 start = segment_end + 1
-
-        elif rule.mode == ParseMode.JSON:
-            try:
-                # Clean text to isolate JSON content
-                clean_text = text
-                if "```" in text:
-                    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-                    if match: clean_text = match.group(1)
-                
-                # Parse JSON structure
-                data = json.loads(clean_text)
-                
-                # Extract value using rule name as key
-                if rule.name in data:
-                    val = str(data[rule.name])
-                    results.append((0, len(text), val))
-                    
-            except json.JSONDecodeError:
-                pass
 
         return results
 

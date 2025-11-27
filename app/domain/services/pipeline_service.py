@@ -30,19 +30,21 @@ class PipelineService:
     and storing their results. It integrates parsing, generation, and verification services.
     """
 
-    def __init__(self, default_model_name: str):
+    def __init__(self, generation_model_name: str, verify_model_name: str):
         """
         Initializes the PipelineService with parsing, generation, and verification services.
 
         Args:
-            default_model_name: The name of the language model to be used for text generation.
+            model_name: The name of the language model to be used for text generation.
         """
-        self.default_model_name = default_model_name
-        self.loaded_services: Dict[str, GenerateService] = {}
-        
         self.parse_service = ParseService()
-        self.loaded_services[default_model_name] = GenerateService(default_model_name)
+        self.generate_service = GenerateService(generation_model_name)
         
+        if generation_model_name == verify_model_name:
+            self.verifier_service = VerifierService(generate_service = self.generate_service)
+        else:
+            self.verifier_service = VerifierService(model_name = verify_model_name)
+
         self.results: List[Optional[Tuple[str, List[Any]]]] = []  # Stores results of each step: (step_type, list_of_results)
         self.global_references: Dict[str, str] = {}  # Global references usable across all steps
         
@@ -96,33 +98,6 @@ class PipelineService:
 
         return serializable_results
     
-    def _get_service_for_step(self, step_model_name: Optional[str]) -> GenerateService:
-        """
-        Returns the GenerateService instance for the specified model name.
-        If the model is not loaded, it loads and caches it.
-        
-        Args:
-            step_model_name: The model name specified for the step, or None to use default.
-            
-        Returns:
-            GenerateService: The service instance for the specified model.
-        """
-        target_model = step_model_name if step_model_name else self.default_model_name
-        
-        # If we already have it loaded, return it
-        if target_model in self.loaded_services:
-            return self.loaded_services[target_model]
-            
-        # If not, load the new model
-        logger.info(f"Loading NEW model for specific step: {target_model}")
-        try:
-            new_service = GenerateService(target_model)
-            self.loaded_services[target_model] = new_service
-            return new_service
-        except Exception as e:
-            logger.error(f"Failed to load model {target_model}. Falling back to default.")
-            return self.loaded_services[self.default_model_name]
-            
     def _validate_step_references(self, step: PipelineStep, step_number: int) -> None:
         """
         Validates that the reference_step_numbers for a step are valid (exist and are before current step).
@@ -154,11 +129,6 @@ class PipelineService:
         Returns:
             A list of results from the step, or an empty list if validations fail.
         """
-        if step.condition:
-            if not self._evaluate_condition(step.condition):
-                logger.info(f"Skipping step {step_number} because condition '{step.condition}' was unmet.")
-                return []
-            
         if step.uses_reference and not self._validate_references(step.reference_step_numbers, step_number):
             return []
         
@@ -189,51 +159,6 @@ class PipelineService:
         else:
             _, existing_results = self.results[step_number]
             existing_results.extend(step_result)
-            
-    def _evaluate_condition(self, condition: str) -> bool:
-        """
-        Evaluates simple conditions in the format: "step_X.output.KEY == VALUE".
-        
-        Args:
-            condition: The condition string to evaluate.
-
-        Returns:
-            bool: True if the condition is met, False otherwise.
-        """
-        try:
-            parts = condition.split('==')
-            if len(parts) != 2: return False
-            
-            left, right = parts[0].strip(), parts[1].strip().replace('"', '').replace("'", "").lower()
-            
-            # Expected format: X.output.KEY
-            # Example: 0.output.has_redundancy
-            step_idx = int(left.split('.')[0]) # step number
-            key = left.split('.')[2]      # has_redundancy
-            
-            # Retrieve results from the referenced step
-            if step_idx >= len(self.results) or not self.results[step_idx]:
-                return False
-                
-            _, step_data = self.results[step_idx]
-            if not step_data: return False
-            
-            # Extract the actual value. Assumes it comes from a ParseResult (list of entries).
-            # We take the first entry of the first result.
-            first_result = step_data[0]
-            actual_value = "false"
-            
-            if hasattr(first_result, 'entries') and first_result.entries:
-                actual_value = str(first_result.entries[0].get(key, "false")).lower()
-            elif hasattr(first_result, 'content'):
-                # Fallback: Attempt to read from a GeneratedResult directly (less common without parsing)
-                actual_value = str(first_result.content).lower()
-
-            return actual_value == right
-            
-        except Exception as e:
-            logger.error(f"Error evaluating condition '{condition}': {e}")
-            return False
 
     def _validate_references(self, reference_step_numbers: List[int], current_step_number: int) -> bool:
         """
@@ -263,8 +188,6 @@ class PipelineService:
             A list of GeneratedResult objects.
         """
         request: GenerateTextRequest = step.parameters
-        
-        current_service = self._get_service_for_step(step.llm_model)
 
         reference_data = self._get_reference_data(step.reference_step_numbers, step_number)
 
@@ -272,7 +195,7 @@ class PipelineService:
 
         all_results = []
         for system_prompt, user_prompt, reference_dict in prompt_variations:
-            results = current_service.generate(
+            results = self.generate_service.generate(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 num_sequences=request.num_sequences,
@@ -349,13 +272,9 @@ class PipelineService:
             A list of VerificationSummary objects.
         """
         request: VerifyRequest = step.parameters
-        
-        gen_service = self._get_service_for_step(step.llm_model)
-        
-        current_verifier = VerifierService(generate_service=gen_service)
 
         if not step.uses_reference:
-            verification_summary = current_verifier.verify(
+            verification_summary = self.verifier_service.verify(
                 methods=request.methods,
                 required_for_confirmed=request.required_for_confirmed,
                 required_for_review=request.required_for_review
@@ -368,7 +287,7 @@ class PipelineService:
 
         all_results = []
         for verify_request, reference_dict in verify_requests_variations:
-            result = current_verifier.verify(
+            result = self.verifier_service.verify(
                 methods=verify_request.methods,
                 required_for_confirmed=verify_request.required_for_confirmed,
                 required_for_review=verify_request.required_for_review

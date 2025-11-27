@@ -109,9 +109,7 @@ class CommandProcessor:
                 type=step_type,
                 parameters=parameters,
                 uses_reference=step_data.get("uses_reference", False),
-                reference_step_numbers=step_data.get("reference_step_numbers", []),
-                condition=step_data.get("condition", None),
-                llm_model=step_data.get("llm_model", None)
+                reference_step_numbers=step_data.get("reference_step_numbers", [])
             ))
         return steps
 

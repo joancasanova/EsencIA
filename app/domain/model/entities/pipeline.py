@@ -1,6 +1,6 @@
 # app/domain/model/entities/pipeline.py
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from domain.model.entities.generation import GenerateTextRequest
@@ -25,16 +25,11 @@ class PipelineStep:
                        from previous steps
         reference_step_numbers: List of step indices (0-based) providing 
                                reference data. Ordered by priority.
-        condition: Optional logical condition as a string that must be 
-                   satisfied for this step to execute. Example: "0.output.has_redundancy == True"
-        llm_model: Optional LLM configuration identifier to override default model
     """
     type: str
     parameters: Union[GenerateTextRequest, ParseRequest, VerifyRequest]
     uses_reference: bool = False
     reference_step_numbers: Optional[List[int]] = None
-    condition: Optional[str] = None
-    llm_model: Optional[str] = None
 
 @dataclass
 class PipelineRequest:
