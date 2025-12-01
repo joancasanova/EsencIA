@@ -1774,39 +1774,42 @@ def pipeline_page():
                 ui.icon('account_tree', size='md').classes('text-indigo-400')
                 ui.label('PIPELINE').classes('text-2xl font-bold tracking-wide')
 
-            # Selector de modelo con búsqueda HuggingFace usando ui.select con autocomplete
+            # Selector de modelo con búsqueda HuggingFace
             with ui.row().classes('items-center gap-2'):
                 ui.icon('smart_toy', size='sm').classes('text-slate-400')
                 ui.label('Modelo:').classes('text-sm text-slate-400')
 
-                # Select con autocomplete para modelos
-                model_options = {state.model: state.model} if state.model else {}
-                model_select = ui.select(
-                    options=model_options,
-                    value=state.model,
-                    with_input=True,
-                    new_value_mode='add-unique'
-                ).props('dense outlined dark use-input input-debounce=300').classes('w-80').on('filter', lambda e: on_model_filter(e))
+                model_input = ui.input(value=state.model, placeholder='Escribe para buscar en HuggingFace...').props('dense outlined dark').classes('w-80')
+                model_menu = ui.menu().props('no-parent-event')
 
-                async def update_model_value(e):
-                    state.model = e.value if e.value else ''
+                def on_model_change(e):
+                    state.model = e.value
 
-                model_select.on('update:model-value', update_model_value)
+                model_input.on('update:model-value', on_model_change)
 
-        # Función para buscar modelos en HuggingFace cuando el usuario escribe
-        async def on_model_filter(e):
-            query = e.args.get('inputValue', '') if isinstance(e.args, dict) else str(e.args) if e.args else ''
-            if len(query) < 2:
-                return
+                async def on_model_search():
+                    query = model_input.value.strip() if model_input.value else ''
+                    if len(query) < 2:
+                        model_menu.close()
+                        return
 
-            results = await search_huggingface_models(query)
-            if results:
-                new_options = {r['value']: r['label'] for r in results}
-                # Mantener el valor actual si existe
-                if state.model and state.model not in new_options:
-                    new_options[state.model] = state.model
-                model_select.options = new_options
-                model_select.update()
+                    results = await search_huggingface_models(query)
+                    model_menu.clear()
+                    if results:
+                        with model_menu:
+                            for r in results:
+                                def make_click(val=r['value']):
+                                    def click():
+                                        model_input.value = val
+                                        state.model = val
+                                        model_menu.close()
+                                    return click
+                                ui.menu_item(r['label'], on_click=make_click())
+                        model_menu.open()
+                    else:
+                        model_menu.close()
+
+                model_input.on('keyup', lambda: on_model_search())
 
         # Sección de Plantillas - Diseño simple y claro
         with ui.row().classes('w-full items-center gap-3 p-2 bg-slate-800/30 rounded-lg border border-slate-700/50'):
