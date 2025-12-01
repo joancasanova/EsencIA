@@ -1774,72 +1774,51 @@ def pipeline_page():
                 ui.icon('account_tree', size='md').classes('text-indigo-400')
                 ui.label('PIPELINE').classes('text-2xl font-bold tracking-wide')
 
-            # Selector de modelo con búsqueda HuggingFace
-            with ui.column().classes('relative'):
-                with ui.row().classes('items-center gap-2'):
-                    ui.icon('smart_toy', size='sm').classes('text-slate-400')
-                    ui.label('Modelo:').classes('text-sm text-slate-400')
+            # Selector de modelo con búsqueda HuggingFace usando ui.select con autocomplete
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('smart_toy', size='sm').classes('text-slate-400')
+                ui.label('Modelo:').classes('text-sm text-slate-400')
 
-                    # Input para búsqueda de modelos HuggingFace
-                    model_input = ui.input(
-                        value=state.model,
-                        placeholder='Buscar en HuggingFace...'
-                    ).props('dense outlined dark').classes('w-72')
+                # Select con autocomplete para modelos
+                model_options = {state.model: state.model} if state.model else {}
+                model_select = ui.select(
+                    options=model_options,
+                    value=state.model,
+                    with_input=True,
+                    new_value_mode='add-unique'
+                ).props('dense outlined dark use-input input-debounce=300').classes('w-80').on('filter', lambda e: on_model_filter(e))
 
-                # Contenedor para resultados de búsqueda - mejorado con mejor posicionamiento
-                search_results_container = ui.column().classes('absolute top-full left-0 z-[100] mt-1 w-72 max-h-60 overflow-auto bg-slate-800 border-2 border-indigo-500/40 rounded-lg shadow-2xl hidden')
+                async def update_model_value(e):
+                    state.model = e.value if e.value else ''
 
-        # Función para actualizar resultados de búsqueda
-        async def on_model_search(e):
-            query = e.value.strip()
-            state.model = query  # Actualizar modelo inmediatamente
+                model_select.on('update:model-value', update_model_value)
 
+        # Función para buscar modelos en HuggingFace cuando el usuario escribe
+        async def on_model_filter(e):
+            query = e.args.get('inputValue', '') if isinstance(e.args, dict) else str(e.args) if e.args else ''
             if len(query) < 2:
-                search_results_container.classes(remove='block', add='hidden')
                 return
 
-            # Buscar en HuggingFace
             results = await search_huggingface_models(query)
-
-            search_results_container.clear()
             if results:
-                search_results_container.classes(remove='hidden', add='block')
-                with search_results_container:
-                    for r in results:
-                        def make_select(model_value=r['value']):
-                            def select_model():
-                                state.model = model_value
-                                model_input.value = model_value
-                                search_results_container.classes(remove='block', add='hidden')
-                            return select_model
+                new_options = {r['value']: r['label'] for r in results}
+                # Mantener el valor actual si existe
+                if state.model and state.model not in new_options:
+                    new_options[state.model] = state.model
+                model_select.options = new_options
+                model_select.update()
 
-                        with ui.row().classes('w-full p-2 hover:bg-slate-700 cursor-pointer rounded items-center gap-2').on('click', make_select()):
-                            ui.icon('psychology', size='xs').classes('text-indigo-400')
-                            ui.label(r['label']).classes('text-sm text-slate-200 truncate')
-            else:
-                search_results_container.classes(remove='block', add='hidden')
+        # Sección de Plantillas - Diseño simple y claro
+        with ui.row().classes('w-full items-center gap-3 p-2 bg-slate-800/30 rounded-lg border border-slate-700/50'):
+            ui.icon('widgets', size='xs').classes('text-amber-400')
+            ui.label('Selecciona plantilla:').classes('text-sm text-slate-400')
 
-        model_input.on('input', on_model_search)
-        model_input.on('blur', lambda: asyncio.get_event_loop().call_later(0.2, lambda: search_results_container.classes(remove='block', add='hidden')))
-
-        # Sección de Plantillas - Mejorada con diseño más claro
-        with ui.card().classes('w-full bg-gradient-to-r from-amber-900/20 to-amber-800/10 border border-amber-500/30 p-3 mb-2'):
-            with ui.row().classes('w-full items-center gap-3 mb-2'):
-                ui.icon('bolt', size='sm').classes('text-amber-400')
-                with ui.column().classes('gap-0'):
-                    ui.label('Selecciona plantilla').classes('text-sm font-semibold text-amber-300')
-                    ui.label('o construye tu pipeline desde cero').classes('text-xs text-slate-500')
-
-            # Chips de plantillas con tooltips descriptivos
-            with ui.row().classes('w-full flex-wrap gap-2'):
-                for key, tmpl in PIPELINE_TEMPLATES.items():
-                    ui.button(
-                        tmpl['name'],
-                        icon=tmpl.get('icon', 'settings'),
-                        on_click=lambda k=key: select_template(k)
-                    ).props('outline dense size=sm no-caps').classes(
-                        f'text-{tmpl["color"]}-400 border-{tmpl["color"]}-500/30 hover:bg-{tmpl["color"]}-500/20'
-                    ).tooltip(tmpl.get('description', ''))
+            # Botones de plantillas
+            for key, tmpl in PIPELINE_TEMPLATES.items():
+                ui.button(
+                    tmpl['name'],
+                    on_click=lambda k=key: select_template(k)
+                ).props('flat dense size=sm no-caps').classes(f'text-{tmpl["color"]}-400 hover:bg-{tmpl["color"]}-500/20').tooltip(tmpl.get('description', ''))
 
         # Sección 2: Constructor de Pipeline - Layout 2 columnas (púrpura - paso 2 Configura)
         with ui.card().classes('w-full bg-slate-800/30 border border-purple-500/20 p-3'):
@@ -1847,24 +1826,12 @@ def pipeline_page():
                 with ui.row().classes('items-center gap-2'):
                     ui.icon('build', size='sm').classes('text-purple-400')
                     ui.label('Constructor de Pipeline').classes('text-lg font-semibold text-purple-300')
-                with ui.row().classes('items-center gap-3'):
+                with ui.row().classes('items-center gap-2'):
                     steps_counter_label = ui.label(f'{len(local_state["steps"])} pasos').classes('text-sm text-slate-500')
 
-                    # Separador visual
-                    ui.separator().props('vertical').classes('h-6 bg-slate-600')
-
-                    # Botones Import/Export con etiquetas claras
-                    ui.upload(
-                        on_upload=on_config_upload,
-                        auto_upload=True,
-                        label='Importar'
-                    ).props('flat dense accept=.json color=grey-7 icon=upload_file').classes('text-xs').tooltip('Cargar configuración desde archivo JSON')
-
-                    ui.button(
-                        'Exportar',
-                        icon='file_download',
-                        on_click=export_config
-                    ).props('flat dense size=sm color=grey-7').classes('text-xs').tooltip('Guardar configuración a archivo JSON')
+                    # Botones Import/Export con texto claro
+                    ui.upload(on_upload=on_config_upload, auto_upload=True).props('flat dense accept=.json').classes('w-8').tooltip('Importar configuración JSON')
+                    ui.button('Exportar', icon='file_download', on_click=export_config).props('flat dense size=sm').classes('text-slate-400').tooltip('Exportar configuración JSON')
 
             # Layout 2 columnas: Lista de pasos (izq) + Config del paso seleccionado (der)
             with ui.row().classes('w-full gap-3'):
