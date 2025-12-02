@@ -2197,7 +2197,7 @@ def pipeline_page():
                         steps_counter_label = ui.label(f'{len(local_state["steps"])} pasos configurados').classes('text-xs text-slate-500')
 
             # Selector de modelo LLM (dentro del constructor)
-            with ui.column().classes('gap-2 mb-3'):
+            with ui.column().classes('w-full gap-2 mb-3'):
                 with ui.row().classes('items-center gap-2'):
                     ui.icon('smart_toy', size='xs').classes('text-indigo-400')
                     ui.label('Modelo de Lenguaje').classes('text-sm font-medium text-slate-300')
