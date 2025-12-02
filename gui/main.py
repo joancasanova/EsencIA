@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from collections import OrderedDict
 
 import psutil
 import httpx
@@ -131,8 +132,43 @@ def format_bytes(bytes_val: int) -> str:
     return f"{bytes_val / (1024**3):.1f} GB"
 
 
+# =============================================================================
+# SYSTEM RESOURCES - Cache y optimizaciones
+# =============================================================================
+_system_resources_cache: Optional[Dict[str, Any]] = None
+_system_resources_timestamp: Optional[float] = None
+_RESOURCES_CACHE_TTL = 60  # 60 segundos de TTL
+
+# pynvml singleton - inicializar una sola vez
+_pynvml_initialized = False
+_pynvml_handle = None
+
+
+def _init_pynvml_once():
+    """Inicializa pynvml una sola vez (singleton)."""
+    global _pynvml_initialized, _pynvml_handle
+    if PYNVML_AVAILABLE and not _pynvml_initialized:
+        try:
+            pynvml.nvmlInit()
+            device_count = pynvml.nvmlDeviceGetCount()
+            if device_count > 0:
+                _pynvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            _pynvml_initialized = True
+        except Exception:
+            _pynvml_initialized = True  # Marcar como intentado para no reintentar
+            _pynvml_handle = None
+
+
 def get_system_resources() -> Dict[str, Any]:
-    """Obtiene información de recursos del sistema."""
+    """Obtiene información de recursos del sistema con cache TTL de 60s."""
+    global _system_resources_cache, _system_resources_timestamp
+
+    # Retornar cache si es reciente
+    now = datetime.now().timestamp()
+    if _system_resources_cache and _system_resources_timestamp:
+        if now - _system_resources_timestamp < _RESOURCES_CACHE_TTL:
+            return _system_resources_cache
+
     info = {
         'ram_total': 0,
         'ram_available': 0,
@@ -158,24 +194,21 @@ def get_system_resources() -> Dict[str, Any]:
     info['ram_available'] = mem.available
     info['ram_used_percent'] = mem.percent
 
-    # GPU con pynvml (más preciso y rápido - no requiere torch)
-    if PYNVML_AVAILABLE:
+    # GPU con pynvml (singleton - no reinicializa)
+    _init_pynvml_once()
+    if _pynvml_handle is not None:
         try:
-            pynvml.nvmlInit()
-            device_count = pynvml.nvmlDeviceGetCount()
-            if device_count > 0:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                info['gpu_detected'] = True
-                info['gpu_name'] = pynvml.nvmlDeviceGetName(handle)
-                if isinstance(info['gpu_name'], bytes):
-                    info['gpu_name'] = info['gpu_name'].decode('utf-8')
+            info['gpu_detected'] = True
+            gpu_name = pynvml.nvmlDeviceGetName(_pynvml_handle)
+            if isinstance(gpu_name, bytes):
+                gpu_name = gpu_name.decode('utf-8')
+            info['gpu_name'] = gpu_name
 
-                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                info['vram_total'] = mem_info.total
-                info['vram_available'] = mem_info.free
-                info['vram_used_percent'] = (mem_info.used / mem_info.total) * 100
-                info['cuda_available'] = True  # Si pynvml funciona, CUDA está disponible
-            pynvml.nvmlShutdown()
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(_pynvml_handle)
+            info['vram_total'] = mem_info.total
+            info['vram_available'] = mem_info.free
+            info['vram_used_percent'] = (mem_info.used / mem_info.total) * 100
+            info['cuda_available'] = True
         except Exception:
             pass
 
@@ -197,11 +230,28 @@ def get_system_resources() -> Dict[str, Any]:
                 except Exception:
                     pass
 
+    # Guardar en cache
+    _system_resources_cache = info
+    _system_resources_timestamp = now
+
     return info
 
 
-# Cache para búsqueda de modelos HuggingFace
-_hf_search_cache: Dict[str, List[Dict]] = {}
+# Cache LRU para búsqueda de modelos HuggingFace (máximo 50 entradas)
+_hf_search_cache: OrderedDict = OrderedDict()
+_HF_CACHE_MAX_ENTRIES = 50
+
+
+def _add_to_hf_cache(key: str, value: List[Dict]):
+    """Añade al cache LRU, eliminando entradas antiguas si excede el límite."""
+    # Si ya existe, moverlo al final (más reciente)
+    if key in _hf_search_cache:
+        _hf_search_cache.move_to_end(key)
+    _hf_search_cache[key] = value
+    # Eliminar entradas más antiguas si excede el límite
+    while len(_hf_search_cache) > _HF_CACHE_MAX_ENTRIES:
+        _hf_search_cache.popitem(last=False)
+
 
 # Modelos precargados (se cargan al iniciar la página)
 _preloaded_models: List[Dict] = []
@@ -399,7 +449,7 @@ async def search_huggingface_models(query: str, limit: int = 8) -> List[Dict]:
                 results.sort(key=sort_key)
                 results = results[:limit]  # Limitar a los mejores
 
-                _hf_search_cache[cache_key] = results
+                _add_to_hf_cache(cache_key, results)
                 return results
     except Exception as e:
         print(f"HuggingFace search error: {e}")
@@ -517,16 +567,18 @@ async def preload_recommended_models():
 
 
 def filter_preloaded_models(query: str, limit: int = 8) -> List[Dict]:
-    """Filtra modelos precargados por query."""
+    """Filtra modelos precargados por query con early stopping."""
     if not _preloaded_models or not query:
         return []
 
     query_lower = query.lower()
-    matches = [
-        m for m in _preloaded_models
-        if query_lower in m['model_id'].lower()
-    ]
-    return matches[:limit]
+    matches = []
+    for m in _preloaded_models:
+        if query_lower in m['model_id'].lower():
+            matches.append(m)
+            if len(matches) >= limit:  # Early stop cuando alcanza el límite
+                break
+    return matches
 
 
 def build_pipeline_steps(config: Dict) -> List[PipelineStep]:
