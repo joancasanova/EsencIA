@@ -2678,11 +2678,8 @@ def main():
             with ui.tab_panel('Benchmark') as benchmark_panel:
                 benchmark_placeholder = ui.column().classes('w-full')
 
-    async def on_tab_change(e):
-        """Renderiza la pestaña seleccionada si no está renderizada (async para no bloquear)."""
-        tab_name = e.args if isinstance(e.args, str) else e.args
-        current_tab['value'] = tab_name
-
+    async def render_tab_content(tab_name: str):
+        """Renderiza el contenido de una pestaña si no está renderizada."""
         if tab_name == 'Pipeline' and not rendered_tabs['Pipeline']:
             # Mostrar loading inmediatamente
             pipeline_placeholder.clear()
@@ -2717,7 +2714,15 @@ def main():
                 benchmark_page()
             rendered_tabs['Benchmark'] = True
 
-    tabs.on('update:model-value', lambda e: asyncio.create_task(on_tab_change(e)))
+    def on_tab_change(e):
+        """Handler para cambio de pestaña - dispara renderizado async."""
+        tab_name = e.args if isinstance(e.args, str) else e.args
+        current_tab['value'] = tab_name
+        asyncio.create_task(render_tab_content(tab_name))
+
+    # Escuchar cambios de pestaña de múltiples formas para mayor confiabilidad
+    tabs.on('update:model-value', on_tab_change)
+    tabs.on_value_change(lambda e: asyncio.create_task(render_tab_content(e.value)))
 
     # Iniciar precarga de modelos HuggingFace en background (no bloquea)
     asyncio.create_task(preload_recommended_models())
