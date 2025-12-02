@@ -230,9 +230,11 @@ def get_system_resources() -> Dict[str, Any]:
                 except Exception:
                     pass
 
-    # Guardar en cache
-    _system_resources_cache = info
-    _system_resources_timestamp = now
+    # Guardar en cache SOLO si torch se detectó correctamente
+    # Si torch_version es None, puede que aún esté cargando - no cachear
+    if info['torch_version'] is not None:
+        _system_resources_cache = info
+        _system_resources_timestamp = now
 
     return info
 
@@ -1027,7 +1029,7 @@ def home_page(tabs=None):
                                 ram_used = resources['ram_total'] - resources['ram_available']
                                 ui.label(f"{format_bytes(ram_used)}/{format_bytes(resources['ram_total'])}").classes('text-xs text-slate-500 whitespace-nowrap')
 
-                    # Avisos de configuración (solo problemas reales)
+                    # Avisos de configuración (solo problemas reales y confiables)
                     warnings = []
 
                     # GPU detectada pero CUDA no disponible (problema de drivers)
@@ -1039,14 +1041,8 @@ def home_page(tabs=None):
                             'msg': 'Instala CUDA Toolkit para usar la GPU'
                         })
 
-                    # PyTorch no instalado (crítico)
-                    if not resources['torch_version']:
-                        warnings.append({
-                            'icon': 'error',
-                            'color': 'red',
-                            'title': 'PyTorch no instalado',
-                            'msg': 'Ejecuta: pip install torch'
-                        })
+                    # Nota: No mostramos aviso de PyTorch porque con lazy loading
+                    # puede dar falsos positivos mientras torch se carga en background
 
                     if warnings:
                         with ui.column().classes('w-full items-center gap-2 mt-2'):
