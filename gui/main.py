@@ -2202,7 +2202,7 @@ def pipeline_page():
                     ui.icon('smart_toy', size='xs').classes('text-indigo-400')
                     ui.label('Modelo de Lenguaje').classes('text-sm font-medium text-slate-300')
 
-                with ui.element('div').classes('w-80 relative'):
+                with ui.element('div').classes('w-[420px] relative'):
                     with ui.element('div').classes(
                         'w-full flex items-center gap-3 px-3 py-2 bg-slate-900/50 '
                         'border border-slate-600/50 rounded-lg hover:border-indigo-500/50 '
@@ -2216,10 +2216,10 @@ def pipeline_page():
                         search_indicator = ui.spinner('dots', size='sm').classes('text-indigo-400')
                         search_indicator.set_visibility(False)
 
-                    # Dropdown de resultados
+                    # Dropdown de resultados (más alto para mejor visibilidad)
                     model_dropdown = ui.column().classes(
                         'absolute top-full left-0 right-0 mt-1 bg-slate-800/95 backdrop-blur-sm '
-                        'border border-slate-600/50 rounded-lg shadow-2xl z-50 max-h-40 overflow-y-auto'
+                        'border border-slate-600/50 rounded-lg shadow-2xl z-50 max-h-72 overflow-y-auto'
                     )
                     model_dropdown.set_visibility(False)
 
@@ -2269,8 +2269,8 @@ def pipeline_page():
                                 f'px-3 py-2 cursor-pointer {bg_hover} transition-all border-b border-slate-700/30'
                             ).on('click', make_click()):
                                 with ui.row().classes('items-center justify-between w-full gap-2'):
-                                    ui.label(r.get('model_id', '')).classes('text-sm font-medium text-slate-100 truncate')
-                                    with ui.element('span').classes(f'px-2 py-0.5 text-xs rounded border {badge_class}'):
+                                    ui.label(r.get('model_id', '')).classes('text-sm font-medium text-slate-100 truncate flex-1 min-w-0')
+                                    with ui.element('span').classes(f'px-2 py-0.5 text-xs rounded border flex-shrink-0 {badge_class}'):
                                         ui.label(badge_text)
                                 with ui.row().classes('items-center gap-3 mt-1'):
                                     ui.label(f"Params: {r.get('params_str', '?')}").classes('text-xs text-slate-400')
