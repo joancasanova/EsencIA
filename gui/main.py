@@ -2158,7 +2158,7 @@ def pipeline_page():
         # Sección de Plantillas - Cards visuales con indicador de selección
         with ui.column().classes('w-full gap-3'):
             with ui.row().classes('items-baseline gap-2'):
-                ui.icon('widgets', size='xs').classes('text-amber-400')
+                ui.icon('widgets', size='xs').classes('text-amber-400 self-center')
                 ui.label('Inicio rápido').classes('text-sm font-medium text-slate-300')
                 ui.label('Selecciona una plantilla para comenzar o crea un pipeline desde cero').classes('text-xs text-slate-500')
 
