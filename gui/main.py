@@ -2678,24 +2678,46 @@ def main():
             with ui.tab_panel('Benchmark') as benchmark_panel:
                 benchmark_placeholder = ui.column().classes('w-full')
 
-    def on_tab_change(e):
-        """Renderiza la pestaña seleccionada si no está renderizada."""
+    async def on_tab_change(e):
+        """Renderiza la pestaña seleccionada si no está renderizada (async para no bloquear)."""
         tab_name = e.args if isinstance(e.args, str) else e.args
         current_tab['value'] = tab_name
 
         if tab_name == 'Pipeline' and not rendered_tabs['Pipeline']:
+            # Mostrar loading inmediatamente
+            pipeline_placeholder.clear()
+            with pipeline_placeholder:
+                with ui.column().classes('w-full items-center justify-center py-20'):
+                    ui.spinner('dots', size='lg').classes('text-indigo-400')
+                    ui.label('Cargando Pipeline...').classes('text-slate-400 mt-4')
+
+            # Ceder control al event loop para que se muestre el loading
+            await asyncio.sleep(0.05)
+
+            # Renderizar el contenido real
             pipeline_placeholder.clear()
             with pipeline_placeholder:
                 pipeline_page()
             rendered_tabs['Pipeline'] = True
 
         elif tab_name == 'Benchmark' and not rendered_tabs['Benchmark']:
+            # Mostrar loading inmediatamente
+            benchmark_placeholder.clear()
+            with benchmark_placeholder:
+                with ui.column().classes('w-full items-center justify-center py-20'):
+                    ui.spinner('dots', size='lg').classes('text-indigo-400')
+                    ui.label('Cargando Benchmark...').classes('text-slate-400 mt-4')
+
+            # Ceder control al event loop
+            await asyncio.sleep(0.05)
+
+            # Renderizar el contenido real
             benchmark_placeholder.clear()
             with benchmark_placeholder:
                 benchmark_page()
             rendered_tabs['Benchmark'] = True
 
-    tabs.on('update:model-value', on_tab_change)
+    tabs.on('update:model-value', lambda e: asyncio.create_task(on_tab_change(e)))
 
     # Iniciar precarga de modelos HuggingFace en background (no bloquea)
     asyncio.create_task(preload_recommended_models())
