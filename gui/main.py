@@ -2160,7 +2160,7 @@ def pipeline_page():
             with ui.row().classes('items-baseline gap-2'):
                 ui.icon('widgets', size='xs').classes('text-amber-400')
                 ui.label('Inicio rápido').classes('text-sm font-medium text-slate-300')
-                ui.label('Selecciona una plantilla para comenzar').classes('text-xs text-slate-500')
+                ui.label('Selecciona una plantilla para comenzar o crea un pipeline desde cero').classes('text-xs text-slate-500')
 
             with ui.row().classes('w-full gap-2 flex-wrap'):
                 for key, tmpl in PIPELINE_TEMPLATES.items():
