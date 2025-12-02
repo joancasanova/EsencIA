@@ -2162,29 +2162,26 @@ def pipeline_page():
                 ui.label('Inicio rápido').classes('text-sm font-medium text-slate-300')
                 ui.label('Selecciona una plantilla para comenzar').classes('text-xs text-slate-500')
 
-            with ui.row().classes('w-full gap-3 flex-wrap'):
+            with ui.row().classes('w-full gap-2 flex-wrap'):
                 for key, tmpl in PIPELINE_TEMPLATES.items():
                     color = tmpl.get('color', 'slate')
                     icon = tmpl.get('icon', 'build')
                     is_selected = local_state['selected_template'] == key
 
-                    # Card de plantilla (más visual)
+                    # Card de plantilla compacta
                     border_style = f'border-2 border-{color}-500' if is_selected else f'border border-{color}-500/30'
                     bg_style = f'bg-{color}-500/10' if is_selected else 'bg-slate-800/50'
 
-                    with ui.card().classes(f'{bg_style} {border_style} p-3 cursor-pointer hover:border-{color}-500/60 transition-all min-w-[140px]').on('click', lambda k=key: select_template(k)):
-                        with ui.column().classes('items-center gap-2'):
+                    with ui.card().classes(f'{bg_style} {border_style} p-2 cursor-pointer hover:border-{color}-500/60 transition-all').on('click', lambda k=key: select_template(k)):
+                        with ui.row().classes('items-center gap-2'):
                             # Icono
-                            with ui.element('div').classes(f'w-8 h-8 rounded-lg bg-{color}-500/20 flex items-center justify-center'):
+                            with ui.element('div').classes(f'w-6 h-6 rounded bg-{color}-500/20 flex items-center justify-center'):
                                 ui.icon(icon, size='xs').classes(f'text-{color}-400')
                             # Nombre
-                            ui.label(tmpl['name']).classes(f'text-sm font-medium text-{color}-300 text-center')
-                            # Descripción corta
-                            if tmpl.get('description'):
-                                ui.label(tmpl['description'][:40] + ('...' if len(tmpl.get('description', '')) > 40 else '')).classes('text-xs text-slate-500 text-center')
+                            ui.label(tmpl['name']).classes(f'text-xs font-medium text-{color}-300')
                             # Indicador de selección
                             if is_selected:
-                                ui.icon('check_circle', size='xs').classes(f'text-{color}-400')
+                                ui.icon('check', size='xs').classes(f'text-{color}-400')
 
         # Sección 2: Constructor de Pipeline - Layout 2 columnas (púrpura - paso 2 Configura)
         with ui.card().classes('w-full bg-slate-800/30 border border-purple-500/20 p-4'):
