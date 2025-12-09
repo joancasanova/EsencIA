@@ -1277,17 +1277,23 @@ def pipeline_page():
         }
         /* Inputs sutiles - igual que el buscador */
         .input-subtle.q-field--outlined .q-field__control:before,
-        .input-subtle.q-field--outlined .q-field__control:after {
+        .input-subtle.q-field--outlined .q-field__control:after,
+        .input-subtle.q-textarea--outlined .q-field__control:before,
+        .input-subtle.q-textarea--outlined .q-field__control:after {
             border: 1px solid rgba(71, 85, 105, 0.5) !important;
             border-width: 1px !important;
         }
         .input-subtle.q-field--outlined:hover .q-field__control:before,
-        .input-subtle.q-field--outlined:hover .q-field__control:after {
+        .input-subtle.q-field--outlined:hover .q-field__control:after,
+        .input-subtle.q-textarea--outlined:hover .q-field__control:before,
+        .input-subtle.q-textarea--outlined:hover .q-field__control:after {
             border-color: rgba(168, 85, 247, 0.5) !important;
             border-width: 1px !important;
         }
         .input-subtle.q-field--outlined.q-field--focused .q-field__control:before,
-        .input-subtle.q-field--outlined.q-field--focused .q-field__control:after {
+        .input-subtle.q-field--outlined.q-field--focused .q-field__control:after,
+        .input-subtle.q-textarea--outlined.q-field--focused .q-field__control:before,
+        .input-subtle.q-textarea--outlined.q-field--focused .q-field__control:after {
             border-color: rgb(168, 85, 247) !important;
             border-width: 1px !important;
         }
@@ -2186,7 +2192,7 @@ def pipeline_page():
                     with ui.column().classes('w-full gap-0 mt-1'):
                         system_textarea = ui.textarea(
                             value=params.get('system_prompt', ''),
-                            placeholder='Eres un asistente capaz de detectar faltas ortográficas y gramaticales en un texto. Se te dará como input un texto y debes...',
+                            placeholder='Eres un asistente capaz de...',
                             on_change=lambda e, i=idx: update_step_param(i, 'system_prompt', e.value)
                         ).props('outlined dark dense rows=1 autogrow').classes('w-full input-subtle' + (' rounded-b-none' if has_vars else ''))
                         render_variable_chips(system_textarea, 'system_prompt')
