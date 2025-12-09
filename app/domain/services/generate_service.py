@@ -273,15 +273,25 @@ class GenerateService:
             inputs = self.tokenizer([prompt], return_tensors="pt").to(self.device)
 
             # Generate with CUDA OOM protection
+            # temperature=0 means greedy decoding (do_sample=False)
+            # temperature>0 means sampling with that temperature
+            use_sampling = temperature > 0
+
             with torch.no_grad():  # Disable gradient computation for inference
-                outputs = self.model.generate(
+                generate_kwargs = {
                     **inputs,
-                    max_new_tokens=max_tokens,
-                    num_return_sequences=num_sequences,
-                    do_sample=True,
-                    temperature=temperature,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
+                    "max_new_tokens": max_tokens,
+                    "num_return_sequences": num_sequences,
+                    "pad_token_id": self.tokenizer.eos_token_id,
+                }
+
+                if use_sampling:
+                    generate_kwargs["do_sample"] = True
+                    generate_kwargs["temperature"] = temperature
+                else:
+                    generate_kwargs["do_sample"] = False
+
+                outputs = self.model.generate(**generate_kwargs)
 
             # Process outputs
             decoded_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
