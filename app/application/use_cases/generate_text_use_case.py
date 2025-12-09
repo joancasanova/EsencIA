@@ -2,6 +2,8 @@
 
 import logging
 from datetime import datetime
+
+from config import DEFAULT_MODEL_NAME
 from domain.model.entities.generation import GenerateTextRequest, GenerateTextResponse
 from domain.services.generate_service import GenerateService
 
@@ -10,19 +12,19 @@ logger = logging.getLogger(__name__)
 class GenerateTextUseCase:
     """
     Orchestrates text generation using Large Language Models (LLMs).
-    
+
     Handles full generation workflow including:
     - Input validation and sanitization
     - Prompt preparation and placeholder substitution
     - LLM execution through GenerateService
     - Performance metrics collection (tokens, timing)
     - Error handling and logging
-    
+
     Attributes:
         generate_service: Service handling actual LLM interactions
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+    def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
         """
         Initializes text generation components with specified model.
         
@@ -93,10 +95,12 @@ class GenerateTextUseCase:
                 model_name=generated_results[0].metadata.model_name if generated_results else "unknown"
             )
             
+        except ValueError as e:
+            logger.error(f"Invalid generation parameters: {e}")
+            raise ValueError(f"Generation failed due to invalid parameters: {e}") from e
         except Exception as e:
-            logger.exception("Critical error during text generation pipeline")
-            # Preserve stack trace while propagating error
-            raise e
+            logger.exception(f"Critical error during text generation: {type(e).__name__}")
+            raise RuntimeError(f"Text generation failed: {e}") from e
 
     def _validate_request(self, request: GenerateTextRequest) -> None:
         """

@@ -1,7 +1,8 @@
 # domain/services/verifier_service.py
 
 import logging
-from typing import List
+from typing import List, Optional
+
 from domain.model.entities.verification import (
     VerificationMethod, VerificationMode,
     VerificationResult, VerificationSummary, VerificationStatus
@@ -15,11 +16,23 @@ class VerifierService:
     Service that performs verification checks on text/data by leveraging
     a provided LLM. Supports both ELIMINATORY and CUMULATIVE verification modes.
     """
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-1.5B-Instruct", generate_service: GenerateService = None):
+    def __init__(self, model_name: Optional[str] = None, generate_service: Optional[GenerateService] = None):
+        """
+        Initialize VerifierService with either a model name or a GenerateService.
+
+        Args:
+            model_name: Name of the model to use for verification (creates new GenerateService)
+            generate_service: Pre-configured GenerateService instance
+
+        Raises:
+            ValueError: If neither model_name nor generate_service is provided
+        """
         if generate_service:
             self.generate_service = generate_service
-        else:
+        elif model_name:
             self.generate_service = GenerateService(model_name)
+        else:
+            raise ValueError("Either model_name or generate_service must be provided")
 
     def verify(
         self,
@@ -46,8 +59,9 @@ class VerifierService:
                 final_status = VerificationStatus.discarded()
                 break
             elif result.passed and method.mode == VerificationMode.ELIMINATORY:
+                # ELIMINATORY methods that pass also count toward cumulative threshold
                 cumulative_passes += 1
-            
+
             if result.passed and method.mode == VerificationMode.CUMULATIVE:
                 cumulative_passes += 1
 
@@ -70,10 +84,22 @@ class VerifierService:
     
     def _verify_consensus(self, method: VerificationMethod) -> VerificationResult:
         """
-        Conduct a 'consensus' check: LLM generates multiple sequences; 
+        Conduct a 'consensus' check: LLM generates multiple sequences;
         we count how many responses match a valid_responses list.
+
+        Args:
+            method: VerificationMethod configuration
+
+        Returns:
+            VerificationResult with verification outcome
+
+        Raises:
+            ValueError: If method configuration is invalid
+            RuntimeError: If generation or processing fails
         """
         logger.debug(f"Consensus verification for method '{method.name}'.")
+
+        # Validate method configuration
         if not method.valid_responses:
             logger.error("Valid responses not defined for consensus verification.")
             raise ValueError("Consensus verification requires valid responses")
@@ -87,29 +113,44 @@ class VerifierService:
         system_prompt = method.system_prompt
         user_prompt = method.user_prompt
 
-        logger.debug(f"Generating {method.num_sequences} sequence(s) for verification method '{method.name}'.")
-        responses = self.generate_service.generate(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            num_sequences=method.num_sequences,
-            max_tokens=10 
-        )
+        # Generate responses with error handling
+        try:
+            logger.debug(f"Generating {method.num_sequences} sequence(s) for verification method '{method.name}'.")
+            responses = self.generate_service.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                num_sequences=method.num_sequences,
+                max_tokens=method.max_tokens,
+                temperature=method.temperature
+            )
+        except ValueError as e:
+            logger.error(f"Invalid parameters for verification method '{method.name}': {e}")
+            raise ValueError(f"Verification failed for method '{method.name}': {e}") from e
+        except Exception as e:
+            logger.exception(f"Unexpected error during generation for method '{method.name}'")
+            raise RuntimeError(f"Verification execution failed for method '{method.name}': {e}") from e
 
-        generated_responses = [response.content for response in responses]
+        # Process responses with error handling
+        try:
+            generated_responses = [response.content for response in responses]
 
-        positive_responses = sum(
-            1 for r in responses
-            if any(vr.lower() in r.content.strip().lower() for vr in method.valid_responses)
-        )
-        passed = positive_responses >= method.required_matches
+            positive_responses = sum(
+                1 for r in responses
+                if any(vr.lower() in r.content.strip().lower() for vr in method.valid_responses)
+            )
+            passed = positive_responses >= method.required_matches
 
-        logger.debug(f"Method '{method.name}' => {positive_responses}/{len(responses)} positive responses. Passed={passed}")
-        return VerificationResult(
-            method=method,
-            passed=passed,
-            score=positive_responses / len(responses) if responses else 0.0,
-            details={
-                "positive_responses": positive_responses,
-                "generated_responses": generated_responses,
-            }
-        )
+            logger.debug(f"Method '{method.name}' => {positive_responses}/{len(responses)} positive responses. Passed={passed}")
+
+            return VerificationResult(
+                method=method,
+                passed=passed,
+                score=positive_responses / len(responses) if len(responses) > 0 else 0.0,
+                details={
+                    "positive_responses": positive_responses,
+                    "generated_responses": generated_responses,
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error processing verification results for method '{method.name}'")
+            raise RuntimeError(f"Failed to process verification results: {e}") from e

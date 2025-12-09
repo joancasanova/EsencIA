@@ -1,9 +1,16 @@
 # domain/model/entities/verification.py
 
-from dataclasses import dataclass
-from typing import List, Optional, Dict
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Dict
 from enum import Enum
 from datetime import datetime
+
+from config.settings import (
+    MIN_TEMPERATURE,
+    MAX_TEMPERATURE,
+    MIN_MAX_TOKENS,
+    MAX_MAX_TOKENS
+)
 
 class VerificationMode(Enum):
     """
@@ -38,7 +45,7 @@ class VerificationThresholds:
 class VerificationMethod:
     """
     Configuration for a single verification technique.
-    
+
     Attributes:
         mode: Verification strategy type (ELIMINATORY/CUMULATIVE)
         name: Unique identifier for the method
@@ -49,6 +56,9 @@ class VerificationMethod:
         required_matches: Minimum valid responses needed
         max_tokens: Limit for LLM response length
         temperature: Sampling creativity control (0.0-2.0)
+
+    Raises:
+        ValueError: If any parameter is invalid or out of range
     """
     mode: VerificationMode
     name: str
@@ -59,6 +69,41 @@ class VerificationMethod:
     required_matches: int
     max_tokens: int = 100
     temperature: float = 1.0
+
+    def __post_init__(self):
+        """Validates method parameters after initialization."""
+        if not self.name or not self.name.strip():
+            raise ValueError("name cannot be empty")
+
+        if not self.system_prompt or not self.system_prompt.strip():
+            raise ValueError("system_prompt cannot be empty")
+
+        if not self.user_prompt or not self.user_prompt.strip():
+            raise ValueError("user_prompt cannot be empty")
+
+        if self.num_sequences < 1:
+            raise ValueError(f"num_sequences must be >= 1, got {self.num_sequences}")
+
+        if self.required_matches < 1:
+            raise ValueError(f"required_matches must be >= 1, got {self.required_matches}")
+
+        if self.required_matches > self.num_sequences:
+            raise ValueError(
+                f"required_matches ({self.required_matches}) cannot exceed "
+                f"num_sequences ({self.num_sequences})"
+            )
+
+        if not (MIN_MAX_TOKENS <= self.max_tokens <= MAX_MAX_TOKENS):
+            raise ValueError(
+                f"max_tokens must be between {MIN_MAX_TOKENS} and {MAX_MAX_TOKENS}, "
+                f"got {self.max_tokens}"
+            )
+
+        if not (MIN_TEMPERATURE <= self.temperature <= MAX_TEMPERATURE):
+            raise ValueError(
+                f"temperature must be between {MIN_TEMPERATURE} and {MAX_TEMPERATURE}, "
+                f"got {self.temperature}"
+            )
 
 @dataclass(frozen=True)
 class VerificationResult:
@@ -75,8 +120,8 @@ class VerificationResult:
     method: VerificationMethod
     passed: bool
     score: Optional[float] = None
-    details: Optional[Dict[str, any]] = None
-    timestamp: datetime = datetime.now()
+    details: Optional[Dict[str, Any]] = None
+    timestamp: datetime = field(default_factory=datetime.now)
 
     def to_dict(self):
         """Serializes result for storage/analysis."""
@@ -136,15 +181,51 @@ class VerificationSummary:
 class VerifyRequest:
     """
     Request to execute verification workflow.
-    
+
     Attributes:
         methods: Verification techniques to apply
         required_for_confirmed: Minimum successes needed for 'confirmed' status
         required_for_review: Minimum successes needed for 'review' status
+
+    Raises:
+        ValueError: If validation constraints are violated
     """
     methods: List[VerificationMethod]
     required_for_confirmed: int
     required_for_review: int
+
+    def __post_init__(self):
+        """Validates request constraints after initialization."""
+        if not self.methods:
+            raise ValueError("methods list cannot be empty")
+
+        if self.required_for_confirmed < 0:
+            raise ValueError(
+                f"required_for_confirmed must be >= 0, got {self.required_for_confirmed}"
+            )
+
+        if self.required_for_review < 0:
+            raise ValueError(
+                f"required_for_review must be >= 0, got {self.required_for_review}"
+            )
+
+        if self.required_for_confirmed > len(self.methods):
+            raise ValueError(
+                f"required_for_confirmed ({self.required_for_confirmed}) cannot exceed "
+                f"number of methods ({len(self.methods)})"
+            )
+
+        if self.required_for_review > len(self.methods):
+            raise ValueError(
+                f"required_for_review ({self.required_for_review}) cannot exceed "
+                f"number of methods ({len(self.methods)})"
+            )
+
+        if self.required_for_review > self.required_for_confirmed:
+            raise ValueError(
+                f"required_for_review ({self.required_for_review}) cannot exceed "
+                f"required_for_confirmed ({self.required_for_confirmed})"
+            )
 
 @dataclass
 class VerifyResponse:
@@ -175,15 +256,15 @@ class VerificationStatus:
 
     @classmethod
     def confirmed(cls):
-       return cls(id="CONFIRMED", status="confirmed")
-    
+        return cls(id="CONFIRMED", status="confirmed")
+
     @classmethod
     def discarded(cls):
-       return cls(id="DISCARDED", status="discarded")
+        return cls(id="DISCARDED", status="discarded")
 
     @classmethod
     def review(cls):
-       return cls(id="REVIEW", status="review")
+        return cls(id="REVIEW", status="review")
     
     @classmethod
     def from_string(cls, status: str) -> Optional['VerificationStatus']:
@@ -197,8 +278,8 @@ class VerificationStatus:
         
     def is_final(self) -> bool:
         """Determines if status is terminal (no further action needed)."""
-        return self in [self.confirmed(), self.discarded()]
+        return self.id in ["CONFIRMED", "DISCARDED"]
 
     def requires_review(self) -> bool:
         """Checks if status requires human intervention."""
-        return self == self.review()
+        return self.id == "REVIEW"

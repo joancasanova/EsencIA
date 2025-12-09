@@ -1,8 +1,15 @@
 # domain/model/entities/generation.py
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Dict
+
+from config.settings import (
+    MIN_TEMPERATURE,
+    MAX_TEMPERATURE,
+    MIN_MAX_TOKENS,
+    MAX_MAX_TOKENS
+)
 
 @dataclass(frozen=True)
 class GenerationMetadata:
@@ -24,7 +31,7 @@ class GenerationMetadata:
     temperature: float
     tokens_used: int
     generation_time: float
-    timestamp: datetime = datetime.now()
+    timestamp: datetime = field(default_factory=datetime.now)
 
 @dataclass
 class GeneratedResult:
@@ -91,19 +98,45 @@ class GeneratedResult:
 class GenerateTextRequest:
     """
     Parameters for controlling text generation process.
-    
+
     Attributes:
         system_prompt: High-level instructions/context for the model
         user_prompt: Specific input/question to generate response for
         num_sequences: Number of variations to generate (1-10 typical)
         max_tokens: Maximum length of generated text (1-4096 typical)
         temperature: Sampling temperature (0.0=deterministic, 1.0=default, 2.0=creative)
+
+    Raises:
+        ValueError: If any parameter is outside valid range or empty
     """
     system_prompt: str
     user_prompt: str
     num_sequences: int = 1
-    max_tokens: int = 100
+    max_tokens: int = 200
     temperature: float = 1.0
+
+    def __post_init__(self):
+        """Validates request parameters after initialization."""
+        if not self.system_prompt or not self.system_prompt.strip():
+            raise ValueError("system_prompt cannot be empty")
+
+        if not self.user_prompt or not self.user_prompt.strip():
+            raise ValueError("user_prompt cannot be empty")
+
+        if self.num_sequences < 1:
+            raise ValueError(f"num_sequences must be >= 1, got {self.num_sequences}")
+
+        if not (MIN_MAX_TOKENS <= self.max_tokens <= MAX_MAX_TOKENS):
+            raise ValueError(
+                f"max_tokens must be between {MIN_MAX_TOKENS} and {MAX_MAX_TOKENS}, "
+                f"got {self.max_tokens}"
+            )
+
+        if not (MIN_TEMPERATURE <= self.temperature <= MAX_TEMPERATURE):
+            raise ValueError(
+                f"temperature must be between {MIN_TEMPERATURE} and {MAX_TEMPERATURE}, "
+                f"got {self.temperature}"
+            )
 
     def to_dict(self):
         """Serializes to API-friendly format."""

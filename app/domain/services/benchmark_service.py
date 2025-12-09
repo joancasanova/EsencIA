@@ -1,18 +1,24 @@
 # domain/services/benchmark_service.py
 
 import logging
+import threading
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from domain.model.entities.benchmark import BenchmarkConfig, BenchmarkResult, BenchmarkMetrics
+from domain.model.entities.pipeline import BenchmarkExecutionContext
 from domain.services.pipeline_service import PipelineService
 
 logger = logging.getLogger(__name__)
 
+
 class BenchmarkService:
     """
     Service handling benchmark execution and metric calculations.
-    
+
+    Thread-safe: Uses execution contexts instead of mutable instance state
+    and locks for shared resource access.
+
     Responsibilities:
     - Execute pipeline for benchmark entries
     - Manage pipeline step configuration
@@ -20,42 +26,59 @@ class BenchmarkService:
     - Calculate performance metrics
     - Track misclassified cases
     """
-    
+
     def __init__(self, model_name: str):
         """
         Initialize benchmark components.
-        
+
         Args:
             model_name: Name of the model being benchmarked
         """
         self.model_name = model_name
-        self.pipeline_service = PipelineService(model_name, model_name)
-        self.results: List[BenchmarkResult] = []
+        self.pipeline_service = PipelineService(model_name)
+        self._execution_lock = threading.Lock()
 
-    def execute_pipeline_for_entry(self, config: BenchmarkConfig, entry: Dict) -> Optional[List[Dict[str, Any]]]:
+    def execute_pipeline_for_entry(
+        self,
+        config: BenchmarkConfig,
+        entry: Dict,
+        context: Optional[BenchmarkExecutionContext] = None
+    ) -> tuple[Optional[List[Dict[str, Any]]], BenchmarkExecutionContext]:
         """
         Execute configured pipeline for a single benchmark entry.
-        
+
+        Thread-safe: Uses a lock to prevent concurrent pipeline executions
+        and an immutable context to track execution state.
+
         Args:
             config: Benchmark configuration
             entry: Input data for pipeline execution
-            
+            context: Optional execution context to use (creates new if None)
+
         Returns:
-            Pipeline results or None if execution fails
+            Tuple of (pipeline results or None if failed, updated context)
         """
+        if context is None:
+            context = BenchmarkExecutionContext()
+
+        # Update context with entry references (convert values to strings for consistency)
+        string_entry = {k: str(v) for k, v in entry.items()}
+        context = context.with_global_references(string_entry)
+
         try:
-            # Set entry data as global references for placeholder substitution
-            self.pipeline_service.global_references = entry
-            
-            # Configure pipeline steps with entry-specific data
-            configured_steps = self._configure_steps(config.pipeline_steps, entry)
-            
-            # Execute pipeline and return results
-            self.pipeline_service.run_pipeline(configured_steps)
-            return self.pipeline_service.get_results()
+            with self._execution_lock:
+                # Set entry data as global references for placeholder substitution
+                self.pipeline_service.global_references = dict(entry)
+
+                # Configure pipeline steps with entry-specific data
+                configured_steps = self._configure_steps(config.pipeline_steps, entry)
+
+                # Execute pipeline and return results
+                self.pipeline_service.run_pipeline(configured_steps)
+                return self.pipeline_service.get_results(), context
         except Exception as e:
             logger.error(f"Pipeline execution failed: {str(e)}")
-            return None
+            return None, context
 
     def _configure_steps(self, steps: List, entry: Dict) -> List:
         """
@@ -161,11 +184,17 @@ class BenchmarkService:
                 misclassified=misclassified
             )
         
-        # Calculate metrics with smoothing to avoid division by zero
+        # Calculate metrics with proper division by zero handling
         accuracy = (confusion_matrix["true_positive"] + confusion_matrix["true_negative"]) / total
-        precision = confusion_matrix["true_positive"] / (confusion_matrix["true_positive"] + confusion_matrix["false_positive"] + 1e-10)
-        recall = confusion_matrix["true_positive"] / (confusion_matrix["true_positive"] + confusion_matrix["false_negative"] + 1e-10)
-        f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+        precision_denominator = confusion_matrix["true_positive"] + confusion_matrix["false_positive"]
+        precision = confusion_matrix["true_positive"] / precision_denominator if precision_denominator > 0 else 0.0
+
+        recall_denominator = confusion_matrix["true_positive"] + confusion_matrix["false_negative"]
+        recall = confusion_matrix["true_positive"] / recall_denominator if recall_denominator > 0 else 0.0
+
+        f1_denominator = precision + recall
+        f1 = 2 * (precision * recall) / f1_denominator if f1_denominator > 0 else 0.0
 
         return BenchmarkMetrics(
             accuracy=accuracy,

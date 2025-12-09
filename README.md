@@ -1,27 +1,30 @@
-# AutoAumento: Guía de Uso
+# EsencIA: Guía de Uso
 
-**AutoAumento** es una aplicación de línea de comandos (CLI) en Python diseñada para realizar tareas avanzadas de procesamiento de texto utilizando modelos de lenguaje (LLMs). Esta guía se enfoca en la utilización de los comandos `pipeline` y `benchmark`, explicando cómo ejecutarlos paso a paso y cómo interpretar los archivos de salida.
+**EsencIA** es una aplicación en Python diseñada para realizar tareas avanzadas de procesamiento de texto utilizando modelos de lenguaje (LLMs). Incluye tanto una interfaz de línea de comandos (CLI) como una interfaz web (GUI), y está optimizada para ejecutarse en **hardware de consumo** (GPUs de 4-16GB VRAM).
 
 ## Tabla de Contenidos
 
 1. [Introducción](#introducción)
-2. [Instalación](#instalación)
-3. [Comando `pipeline`](#comando-pipeline)
+2. [Filosofía de Ejecución Local](#filosofía-de-ejecución-local)
+3. [Instalación](#instalación)
+4. [Interfaz Web (GUI)](#interfaz-web-gui)
+5. [Comando `pipeline`](#comando-pipeline)
     -   [Preparación](#preparación)
     -   [Ejecución](#ejecución)
     -   [Archivos de Configuración](#archivos-de-configuración)
     -   [Interpretación de Resultados](#interpretación-de-resultados)
-4. [Comando `benchmark`](#comando-benchmark)
+6. [Comando `benchmark`](#comando-benchmark)
     -   [Preparación](#preparación-1)
     -   [Ejecución](#ejecución-1)
     -   [Archivos de Configuración](#archivos-de-configuración-1)
     -   [Interpretación de Resultados](#interpretación-de-resultados-1)
-5. [Conclusión](#conclusión)
-6. [Licencia](#licencia)
+7. [Modelos Recomendados](#modelos-recomendados)
+8. [Conclusión](#conclusión)
+9. [Licencia](#licencia)
 
 ## Introducción
 
-AutoAumento ofrece una serie de comandos para interactuar con LLMs, entre ellos:
+EsencIA ofrece una serie de comandos para interactuar con LLMs, entre ellos:
 
 -   `generate`: Genera texto utilizando un LLM.
 -   `parse`: Analiza texto y extrae información estructurada.
@@ -31,13 +34,49 @@ AutoAumento ofrece una serie de comandos para interactuar con LLMs, entre ellos:
 
 Esta guía se centrará en los dos últimos comandos, `pipeline` y `benchmark`, proporcionando instrucciones detalladas para su uso.
 
+## Filosofía de Ejecución Local
+
+EsencIA está diseñado desde su concepción para ejecutarse **localmente** en hardware de consumo, sin depender de APIs externas de pago. Esta filosofía se basa en los siguientes principios:
+
+### Principios de Diseño
+
+1. **Accesibilidad**: Cualquier usuario con una GPU de consumo (4-16GB VRAM) puede ejecutar la aplicación.
+2. **Transparencia**: El sistema informa proactivamente sobre las limitaciones de hardware antes de intentar cargar un modelo.
+3. **Validación Preventiva**: Antes de cargar un modelo, se estiman los recursos necesarios y se comparan con los disponibles.
+4. **Feedback Claro**: Cuando un modelo no puede ejecutarse, se proporcionan mensajes de error detallados y sugerencias de alternativas.
+
+### Sistema de Validación de Recursos
+
+EsencIA incluye un sistema de detección y validación de recursos que:
+
+- **Detecta automáticamente** la GPU disponible, VRAM y RAM del sistema.
+- **Estima los requisitos** de un modelo basándose en su nombre y características conocidas.
+- **Valida la compatibilidad** antes de intentar cargar el modelo.
+- **Sugiere alternativas** cuando el modelo seleccionado no es compatible.
+
+### Requisitos de Hardware por Modelo
+
+| Parámetros del Modelo | VRAM Estimada | Hardware Recomendado |
+|-----------------------|---------------|----------------------|
+| < 1B (tiny/small)     | ~2-3 GB       | GPU 4GB (GTX 1650, RTX 3050) |
+| 1-3B (medium)         | ~4-8 GB       | GPU 6-8GB (RTX 2060, RTX 3060) |
+| 3-7B (large)          | ~8-16 GB      | GPU 10-16GB (RTX 3080, RTX 4070) |
+| > 7B (xlarge)         | > 16 GB       | GPU profesional o múltiples GPUs |
+
+### Modo CPU
+
+Si no hay GPU disponible o la VRAM es insuficiente, EsencIA puede ejecutarse en modo CPU. Sin embargo:
+- La inferencia será **significativamente más lenta** (5-10x).
+- Se requiere **más RAM** (~20% adicional sobre los requisitos de VRAM).
+- Se recomienda usar modelos pequeños (< 3B parámetros) en este modo.
+
 ## Instalación
 
 1. **Clonar el repositorio**:
 
     ```bash
-    git clone https://github.com/tu-usuario/autoaumento.git
-    cd autoaumento
+    git clone <URL_DEL_REPOSITORIO>
+    cd EsencIA
     ```
 
 2. **Crear y activar un entorno virtual** (recomendable):
@@ -59,6 +98,45 @@ Esta guía se centrará en los dos últimos comandos, `pipeline` y `benchmark`, 
 
     Esto instalará las librerías principales (transformers, typer, etc.) y las de desarrollo (pytest, black, pylint...).
 
+## Interfaz Web (GUI)
+
+EsencIA incluye una interfaz web construida con NiceGUI que permite:
+
+- **Visualizar recursos del sistema**: GPU, VRAM, RAM disponibles.
+- **Ver modelos recomendados**: Basados en el hardware detectado.
+- **Configurar y ejecutar pipelines**: Sin necesidad de editar archivos JSON manualmente.
+- **Ejecutar benchmarks**: Con visualización de métricas y matriz de confusión.
+
+### Ejecución de la GUI
+
+Para iniciar la interfaz web:
+
+```bash
+python gui/main.py
+```
+
+La aplicación se abrirá en `http://localhost:8080`.
+
+### Características de la GUI
+
+#### Página Principal
+- Muestra información del sistema (GPU, RAM, CPU).
+- Lista modelos recomendados para tu hardware.
+- Indica el estado de uso de recursos en tiempo real.
+
+#### Página Pipeline
+- Carga configuraciones de pipeline desde archivo o de forma interactiva.
+- Validación de compatibilidad del modelo seleccionado.
+- Ejecución con feedback en tiempo real.
+- Visualización de resultados estructurados.
+
+#### Página Benchmark
+- Carga de configuración y entradas de prueba.
+- Validación de modelo antes de ejecutar.
+- Métricas de rendimiento (Accuracy, Precision, Recall, F1).
+- Matriz de confusión visual.
+- Análisis de casos mal clasificados.
+
 ## Comando `pipeline`
 
 El comando `pipeline` permite ejecutar una serie de pasos de procesamiento de texto definidos en un archivo de configuración. Estos pasos pueden incluir generación de texto, análisis y verificación, y pueden utilizar datos de referencia para personalizar el proceso.
@@ -75,20 +153,19 @@ Antes de ejecutar el comando `pipeline`, asegúrese de tener los siguientes arch
 Para ejecutar el pipeline, utilice el siguiente comando:
 
 ```bash
-python app/main.py pipeline --config config/pipeline/pipeline_config.json --pipeline-generation-model-name <generation_model_name> --pipeline-verify-model-name <verify_model_name>
+python app/main.py pipeline --config config/pipeline/pipeline_config.json --pipeline-model-name <model_name>
 ```
 
 -   `--config`: Ruta al archivo de configuración del pipeline (por defecto: `config/pipeline/pipeline_config.json`).
--   `--pipeline-generation-model-name`: (Opcional) especifica el modelo a usar en los pasos de generación. Por defecto: `Qwen/Qwen2.5-1.5B-Instruct`.
--   `--pipeline-verify-model-name`: (Opcional) especifica el modelo a usar en los pasos de verificación. Por defecto: `Qwen/Qwen2.5-1.5B-Instruct`.
+-   `--pipeline-model-name`: (Opcional) especifica el modelo a usar en todos los pasos del pipeline (generación y verificación). Por defecto: `Qwen/Qwen2.5-1.5B-Instruct`.
 
 **Ejemplo:**
 
 ```bash
-python app/main.py pipeline --config config/pipeline/pipeline_config.json --pipeline-generation-model-name "mistralai/Mistral-7B-Instruct-v0.2" --pipeline-verify-model-name "Qwen/Qwen1.5-0.5B-Chat"
+python app/main.py pipeline --config config/pipeline/pipeline_config.json --pipeline-model-name "mistralai/Mistral-7B-Instruct-v0.2"
 ```
 
-Este comando ejecutará el pipeline definido en `pipeline_config.json`, utilizando `mistralai/Mistral-7B-Instruct-v0.2` para la generación de texto y `Qwen/Qwen1.5-0.5B-Chat` para la verificación. Los resultados se guardarán en la carpeta `out/pipeline`.
+Este comando ejecutará el pipeline definido en `pipeline_config.json`, utilizando `mistralai/Mistral-7B-Instruct-v0.2` para todos los pasos. Los resultados se guardarán en la carpeta `out/pipeline`.
 
 ### Archivos de Configuración
 
@@ -143,7 +220,7 @@ Este archivo define la secuencia de pasos del pipeline. Cada paso puede ser de t
                         "mode": "CUMULATIVE",
                         "name": "Verificar_Concepto",
                         "system_prompt": "Eres un verificador de conceptos. ¿El siguiente texto contiene el concepto {Concepto}?",
-                        "user_prompt": "{content_0}",
+                        "user_prompt": "{output_1}",
                         "valid_responses": ["{Concepto}"],
                         "num_sequences": 3,
                         "required_matches": 2
@@ -167,7 +244,7 @@ Este archivo define la secuencia de pasos del pipeline. Cada paso puede ser de t
 
 -   `steps`: Una lista de pasos a ejecutar.
     -   `type`: El tipo de paso (`generate`, `parse` o `verify`).
-    -   `parameters`: Los parámetros específicos para cada tipo de paso (ver ejemplos en el `README.md` original).
+    -   `parameters`: Los parámetros específicos para cada tipo de paso.
         -   `system_prompt`: (Solo en `generate` y `verify`) Define el contexto general para el LLM.
         -   `user_prompt`: (Solo en `generate` y `verify`) Define la tarea específica para el LLM.
         -   `num_sequences`: (Solo en `generate` y `verify`) Número de respuestas a generar.
@@ -475,6 +552,43 @@ Este archivo contiene una lista de los casos mal clasificados. Cada entrada tien
 -   `actual_label`: La etiqueta real del caso.
 -   `timestamp`: La marca de tiempo de la predicción.
 
+## Modelos Recomendados
+
+EsencIA recomienda los siguientes modelos según el hardware disponible:
+
+### Para GPUs de Gama Baja (4-6GB VRAM)
+
+| Modelo | Parámetros | VRAM | Descripción |
+|--------|------------|------|-------------|
+| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | ~2GB | Muy rápido, ideal para pruebas |
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | 1.1B | ~3GB | Buen balance velocidad/calidad |
+| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | ~4GB | Recomendado para uso general |
+
+### Para GPUs de Gama Media (8-12GB VRAM)
+
+| Modelo | Parámetros | VRAM | Descripción |
+|--------|------------|------|-------------|
+| `microsoft/phi-2` | 2.7B | ~6GB | Alta calidad para su tamaño |
+| `Qwen/Qwen2.5-3B-Instruct` | 3B | ~7GB | Mejor calidad, más recursos |
+
+### Para GPUs de Gama Alta (16GB+ VRAM)
+
+| Modelo | Parámetros | VRAM | Descripción |
+|--------|------------|------|-------------|
+| `mistralai/Mistral-7B-Instruct-v0.2` | 7B | ~14GB | Alta calidad, recomendado |
+| `Qwen/Qwen2.5-7B-Instruct` | 7B | ~14GB | Excelente para tareas complejas |
+
+### Consideraciones sobre Cuantización
+
+Para ejecutar modelos más grandes en hardware limitado, considere usar versiones cuantizadas:
+
+- **AWQ/GPTQ**: Reducen VRAM ~50% con pérdida mínima de calidad.
+- **GGUF (llama.cpp)**: Permite ejecución eficiente en CPU.
+
+Ejemplo: `TheBloke/Mistral-7B-Instruct-v0.2-AWQ` requiere ~7GB VRAM en lugar de ~14GB.
+
 ## Conclusión
 
-Esta guía ha proporcionado una descripción detallada de cómo utilizar los comandos `pipeline` y `benchmark` de AutoAumento. Con esta información, podrá ejecutar pipelines de procesamiento de texto personalizados y evaluar su rendimiento en conjuntos de datos de prueba. Recuerde consultar el `README.md` original para obtener información sobre los comandos `generate`, `parse` y `verify`, así como sobre la estructura general del proyecto.
+Esta guía ha proporcionado una descripción detallada de cómo utilizar los comandos `pipeline` y `benchmark` de EsencIA, así como la interfaz web. Con esta información, podrá ejecutar pipelines de procesamiento de texto personalizados y evaluar su rendimiento en conjuntos de datos de prueba.
+
+La filosofía de ejecución local de EsencIA garantiza que pueda aprovechar modelos de lenguaje avanzados sin depender de servicios externos costosos, utilizando únicamente el hardware disponible en su equipo.

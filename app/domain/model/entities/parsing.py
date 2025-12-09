@@ -63,16 +63,19 @@ class ParseResult:
 class ParseRule:
     """
     Configuration for a single text parsing pattern.
-    
+
     Attributes:
         name: Unique identifier for the rule
         pattern: Primary search pattern (regex or keyword)
         mode: ParseMode determining interpretation of pattern
-        secondary_pattern: Optional boundary marker for KEYWORD mode 
+        secondary_pattern: Optional boundary marker for KEYWORD mode
             (defines substring end point)
         fallback_value: Default value if pattern matching fails
-        
+
     Immutable to ensure consistent parsing behavior
+
+    Raises:
+        ValueError: If name or pattern is empty
     """
     name: str
     pattern: str
@@ -80,25 +83,53 @@ class ParseRule:
     secondary_pattern: Optional[str] = None
     fallback_value: Optional[str] = None
 
+    def __post_init__(self):
+        """Validates rule parameters after initialization."""
+        if not self.name or not self.name.strip():
+            raise ValueError("name cannot be empty")
+
+        if not self.pattern or not self.pattern.strip():
+            raise ValueError("pattern cannot be empty")
+
 @dataclass
 class ParseRequest:
     """
     Parameters for text parsing operation.
-    
+
     Attributes:
-        text: Input text to parse
+        text: Input text to parse. Can be None when used within a pipeline
+              where text comes from a previous step's reference.
         rules: Ordered collection of ParseRules to apply
         output_filter: Result filtering strategy:
             - 'all': Return all parsed entries
             - 'successful': Only entries where all rules matched successfully
             - 'first_n': Return first N entries meeting criteria
-        output_limit: Required when filter='first_n' 
+        output_limit: Required when filter='first_n'
             (maximum number of entries to return)
+
+    Raises:
+        ValueError: If validation constraints are violated
     """
-    text: str
     rules: List[ParseRule]
+    text: Optional[str] = None
     output_filter: Literal["all", "successful", "first_n"] = "all"
     output_limit: Optional[int] = None
+
+    def __post_init__(self):
+        """Validates request parameters after initialization."""
+        if not self.rules:
+            raise ValueError("rules list cannot be empty")
+
+        if self.output_filter == "first_n":
+            if self.output_limit is None:
+                raise ValueError(
+                    "output_limit is required when output_filter is 'first_n'"
+                )
+            if self.output_limit < 1:
+                raise ValueError(
+                    f"output_limit must be >= 1 when output_filter is 'first_n', "
+                    f"got {self.output_limit}"
+                )
 
 @dataclass
 class ParseResponse:

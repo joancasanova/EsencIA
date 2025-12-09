@@ -2,9 +2,15 @@
 
 import json
 import logging
+import traceback
 from typing import List
 
-from domain.model.entities.pipeline import PipelineRequest, PipelineResponse
+from config import DEFAULT_MODEL_NAME
+from domain.model.entities.pipeline import (
+    PipelineRequest,
+    PipelineResponse,
+    PipelineExecutionError
+)
 from domain.services.pipeline_service import PipelineService
 from infrastructure.file_repository import FileRepository
 
@@ -13,7 +19,7 @@ logger = logging.getLogger(__name__)
 class PipelineUseCase:
     """
     Orchestrates pipeline execution and handles reference data processing.
-    
+
     Responsibilities:
     - Manage complete pipeline lifecycle
     - Handle single and multi-reference executions
@@ -21,20 +27,16 @@ class PipelineUseCase:
     - Maintain data consistency across executions
     """
 
-    def __init__(self, 
-                 generation_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct", 
-                 verify_model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+    def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
         """
-        Initializes pipeline components with model configurations.
-        
+        Initializes pipeline components with model configuration.
+
         Args:
-            generation_model_name: Model identifier for text generation
-            verify_model_name: Model identifier for verification tasks
+            model_name: Model identifier for all pipeline operations (generation and verification)
         """
-        self.service = PipelineService(generation_model_name, verify_model_name)
+        self.service = PipelineService(model_name)
         self.file_repo = FileRepository()
-        logger.debug("Initialized PipelineUseCase with models: %s (gen), %s (verify)",
-                    generation_model_name, verify_model_name)
+        logger.debug("Initialized PipelineUseCase with model: %s", model_name)
 
     def _execute(self, request: PipelineRequest) -> PipelineResponse:
         """
@@ -62,29 +64,86 @@ class PipelineUseCase:
                 }
             )
             
+        except ValueError as e:
+            logger.error(f"Invalid pipeline configuration: {e}")
+            raise ValueError(f"Pipeline execution failed due to invalid configuration: {e}") from e
         except Exception as e:
-            logger.error("Pipeline execution failed: %s", str(e))
-            raise
+            logger.exception(f"Pipeline execution failed: {type(e).__name__}: {e}")
+            raise RuntimeError(f"Pipeline execution failed: {e}") from e
 
-    def execute_with_references(self, 
-                               request: PipelineRequest, 
-                               reference_entries: List[dict]) -> PipelineResponse: 
-        
-        logger.info("Starting multi-reference pipeline execution")
-        
-        cumulative_response = PipelineResponse(step_results=[], verification_references={'confirmed': [], 'to_verify': []})
+    def execute_with_references(self,
+                               request: PipelineRequest,
+                               reference_entries: List[dict]) -> PipelineResponse:
+        """
+        Executes pipeline for multiple reference entries with comprehensive error tracking.
 
-        for idx, entry in enumerate(reference_entries): 
+        Args:
+            request: Pipeline configuration
+            reference_entries: List of reference data dictionaries
+
+        Returns:
+            PipelineResponse with results, errors, and execution statistics
+        """
+        logger.info("Starting multi-reference pipeline execution with %d entries", len(reference_entries))
+
+        cumulative_response = PipelineResponse(
+            step_results=[],
+            verification_references={'confirmed': [], 'to_verify': []},
+            total_entries=len(reference_entries),
+            successful_entries=0,
+            failed_entries=0
+        )
+
+        for idx, entry in enumerate(reference_entries):
             try:
                 logger.debug("Processing reference entry %d/%d", idx+1, len(reference_entries))
                 result = self._process_single_entry(request, entry)
+
+                # Accumulate successful results
                 cumulative_response.step_results.extend(result.step_results)
-                cumulative_response.verification_references['confirmed'].extend(result.verification_references['confirmed'])
-                cumulative_response.verification_references['to_verify'].extend(result.verification_references['to_verify'])
-                
+                cumulative_response.verification_references['confirmed'].extend(
+                    result.verification_references['confirmed']
+                )
+                cumulative_response.verification_references['to_verify'].extend(
+                    result.verification_references['to_verify']
+                )
+                cumulative_response.successful_entries += 1
+
+                logger.debug("Successfully processed entry %d", idx+1)
+
             except Exception as e:
-                logger.warning("Failed processing entry %d: %s", idx+1, str(e))
-                continue
+                # Capture full error information
+                error_traceback = traceback.format_exc()
+                error = PipelineExecutionError(
+                    entry_index=idx,
+                    entry_data=entry,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    traceback=error_traceback
+                )
+                cumulative_response.errors.append(error)
+                cumulative_response.failed_entries += 1
+
+                logger.error(
+                    "Failed processing entry %d/%d: %s: %s",
+                    idx+1, len(reference_entries),
+                    type(e).__name__, str(e),
+                    exc_info=True
+                )
+
+        # Log final summary
+        logger.info(
+            "Pipeline execution completed: %d/%d successful, %d failed",
+            cumulative_response.successful_entries,
+            cumulative_response.total_entries,
+            cumulative_response.failed_entries
+        )
+
+        if cumulative_response.failed_entries > 0:
+            logger.warning(
+                "Pipeline completed with %d errors. Check response.errors for details.",
+                cumulative_response.failed_entries
+            )
 
         return cumulative_response
 

@@ -9,29 +9,57 @@ from domain.model.entities.pipeline import PipelineStep
 class BenchmarkConfig:
     """
     Configuration parameters for benchmark execution.
-    
+
     Attributes:
         model_name: Identifier for the ML model being evaluated
         pipeline_steps: Sequence of processing steps to evaluate
         label_key: Key to extract ground truth label from input data
         label_value: Expected value for positive classification
+
+    Raises:
+        ValueError: If any parameter is invalid or empty
     """
     model_name: str
     pipeline_steps: List[PipelineStep]
     label_key: str
     label_value: str
 
+    def __post_init__(self):
+        """Validates benchmark configuration parameters after initialization."""
+        if not self.model_name or not self.model_name.strip():
+            raise ValueError("model_name cannot be empty")
+
+        if not self.pipeline_steps:
+            raise ValueError("pipeline_steps cannot be empty")
+
+        if not self.label_key or not self.label_key.strip():
+            raise ValueError("label_key cannot be empty")
+
+        if not self.label_value or not self.label_value.strip():
+            raise ValueError("label_value cannot be empty")
+
 @dataclass
 class BenchmarkEntry:
     """
     Represents a single test case in the benchmark dataset.
-    
+
     Attributes:
         input_data: Dictionary of input features/parameters
         expected_label: Ground truth label for validation
+
+    Raises:
+        ValueError: If input_data is empty or expected_label is empty
     """
     input_data: Dict[str, Any]
     expected_label: str
+
+    def __post_init__(self):
+        """Validates benchmark entry parameters after initialization."""
+        if not self.input_data:
+            raise ValueError("input_data cannot be empty")
+
+        if not self.expected_label or not self.expected_label.strip():
+            raise ValueError("expected_label cannot be empty")
 
 @dataclass
 class BenchmarkResult:

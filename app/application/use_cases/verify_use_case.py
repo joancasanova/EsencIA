@@ -2,6 +2,8 @@
 
 import logging
 from datetime import datetime
+
+from config import DEFAULT_MODEL_NAME
 from domain.model.entities.verification import VerifyRequest, VerifyResponse
 from domain.services.verifier_service import VerifierService
 
@@ -10,20 +12,20 @@ logger = logging.getLogger(__name__)
 class VerifyUseCase:
     """
     Orchestrates verification processes using multiple validation methods.
-    
+
     Responsibilities:
     - Validates verification request parameters
     - Coordinates verification workflow through VerifierService
     - Calculates performance metrics and success rates
     - Handles error propagation and logging
-    
+
     Uses LLM-based checks to perform:
     - Consensus validation between multiple generations
     - Placeholder verification
     - Semantic consistency checks
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+    def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
         """
         Initializes verification components with specified LLM.
         
@@ -83,10 +85,12 @@ class VerifyUseCase:
                 success_rate=success_rate
             )
             
+        except ValueError as e:
+            logger.error(f"Invalid verification parameters: {e}")
+            raise ValueError(f"Verification failed due to invalid parameters: {e}") from e
         except Exception as e:
-            logger.error("Critical error during verification process")
-            # Preserve stack trace while propagating error
-            raise e
+            logger.exception(f"Critical error during verification process: {type(e).__name__}")
+            raise RuntimeError(f"Verification process failed: {e}") from e
 
     def _validate_request(self, request: VerifyRequest) -> None:
         """
@@ -96,7 +100,7 @@ class VerifyUseCase:
         1. At least one verification method required
         2. Confirmed threshold must be positive
         3. Review threshold must be positive
-        4. Confirmed threshold > Review threshold
+        4. Confirmed threshold >= Review threshold
         5. Method-level validation:
            - Required matches must be positive
            - Required matches <= num_sequences
@@ -120,17 +124,14 @@ class VerifyUseCase:
         if request.required_for_review <= 0:
             raise ValueError("Review threshold must be positive")
             
-        if request.required_for_confirmed <= request.required_for_review:
-            raise ValueError("Confirmed threshold must exceed review threshold")
+        if request.required_for_confirmed < request.required_for_review:
+            raise ValueError("Confirmed threshold must be greater than or equal to review threshold")
 
         # Per-method validation
         for method in request.methods:
-            if method.required_matches is None:
-                continue
-                
             if method.required_matches <= 0:
                 raise ValueError(f"{method.name}: Required matches must be positive")
-                
+
             if method.required_matches > method.num_sequences:
                 raise ValueError(
                     f"{method.name}: Required matches ({method.required_matches}) "

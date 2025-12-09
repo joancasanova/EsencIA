@@ -28,31 +28,66 @@ class BenchmarkUseCase:
 
     def run_benchmark(self, config: BenchmarkConfig, entries: List[BenchmarkEntry]) -> BenchmarkMetrics:
         """Executes the full benchmarking workflow.
-        
+
         Args:
             config: Benchmark configuration parameters
             entries: List of input entries with expected labels
-            
+
         Returns:
             BenchmarkMetrics: Calculated performance metrics
-        """
-        results = []
-        
-        # Process each benchmark entry through the pipeline
-        for entry in entries:
-            logger.debug(f"Running pipeline for entry: {entry.input_data}")
-            
-            # Execute pipeline and get response
-            pipeline_response = self.benchmark_service.execute_pipeline_for_entry(config, entry.input_data)
-            logger.debug(pipeline_response)
-            
-            # Extract prediction from pipeline response
-            prediction = self._process_prediction(pipeline_response, entry)
-            if prediction:
-                results.append(prediction)
 
-        # Calculate final performance metrics
-        return self.benchmark_service.calculate_metrics(results, config.label_value)
+        Raises:
+            ValueError: If entries list is empty or no valid results obtained
+            RuntimeError: If metrics calculation fails
+        """
+        # Validate inputs
+        if not entries:
+            logger.error("Cannot run benchmark with empty entries list")
+            raise ValueError("Benchmark entries list cannot be empty")
+
+        results = []
+        failed_entries = []
+
+        # Process each benchmark entry through the pipeline
+        for idx, entry in enumerate(entries):
+            try:
+                logger.debug(f"Running pipeline for entry {idx + 1}/{len(entries)}: {entry.input_data}")
+
+                # Execute pipeline and get response (returns tuple of result and context)
+                pipeline_response, _ = self.benchmark_service.execute_pipeline_for_entry(
+                    config, entry.input_data
+                )
+                logger.debug(pipeline_response)
+
+                # Extract prediction from pipeline response
+                prediction = self._process_prediction(pipeline_response, entry)
+                if prediction:
+                    results.append(prediction)
+                else:
+                    logger.warning(f"No valid prediction obtained for entry {idx + 1}")
+                    failed_entries.append(idx + 1)
+            except Exception as e:
+                logger.warning(f"Failed to process entry {idx + 1}: {e}")
+                failed_entries.append(idx + 1)
+                continue
+
+        # Log summary of failures
+        if failed_entries:
+            logger.warning(f"Failed to process {len(failed_entries)}/{len(entries)} entries: {failed_entries}")
+
+        # Ensure we have at least some results
+        if not results:
+            logger.error("No valid results obtained from benchmark run")
+            raise ValueError("Benchmark produced no valid results. All entries failed to process.")
+
+        # Calculate final performance metrics with error handling
+        try:
+            metrics = self.benchmark_service.calculate_metrics(results, config.label_value)
+            logger.info(f"Benchmark completed: {len(results)}/{len(entries)} entries processed successfully")
+            return metrics
+        except Exception as e:
+            logger.exception("Failed to calculate benchmark metrics")
+            raise RuntimeError(f"Metrics calculation failed: {e}") from e
 
     def _process_prediction(self, pipeline_response: Optional[Dict], entry: BenchmarkEntry) -> Optional[BenchmarkResult]:
         """Extracts prediction from pipeline response and validates results.
@@ -64,9 +99,9 @@ class BenchmarkUseCase:
         Returns:
             BenchmarkResult if valid prediction found, None otherwise
         """
-        # Handle empty pipeline response
+        # Handle empty pipeline response (None or empty list)
         if not pipeline_response:
-            logger.debug(f"Pipeline response is None for entry: {entry.input_data}")
+            logger.debug(f"Pipeline response is empty for entry: {entry.input_data}")
             return None
 
         # Find verification step in pipeline results
@@ -81,15 +116,11 @@ class BenchmarkUseCase:
             return None
 
         # Check for valid step data
-        if not verify_step["step_data"]:
-            logger.debug(f"Verify step data is empty for entry: {entry.input_data}")
-            return None
-        
-        # Extract final verification status
         step_data = verify_step.get("step_data", [])
         if not step_data:
+            logger.debug(f"Verify step data is empty for entry: {entry.input_data}")
             return None
-        
+
         # Determine prediction based on verification outcome
         final_status = step_data[0].get("final_status", "").lower()
         return BenchmarkResult(

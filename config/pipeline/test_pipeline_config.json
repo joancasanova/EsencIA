@@ -1,0 +1,19 @@
+{
+    "steps": [
+        {
+            "type": "generate",
+            "parameters": {
+                "system_prompt": "Eres un asistente experto en {tema}. Tus respuestas siempre están estructuradas del siguiente modo: Contenido: 'contenido'\nPor ejemplo:\nContenido: 'Este {tema} es complejo'",
+                "user_prompt": "Genera una descripción de {tema} siguiendo el formato indicado.",
+                "num_sequences": 1,
+                "max_tokens": 50,
+                "temperature": 0.7
+            },
+            "uses_reference": true,
+            "llm_config": "Qwen/Qwen2.5-1.5B-Instruct"
+        }
+    ],
+    "global_references": {
+        "tema": "Inteligencia Artificial"
+    }
+}

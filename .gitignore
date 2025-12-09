@@ -16,3 +16,22 @@ benchmark_results_*.json
 pipeline_results_*.json
 confirmed_*.json
 to_verify_*.json
+
+# Cobertura de tests
+.coverage
+coverage.xml
+htmlcov/
+
+# Archivos temporales
+output.txt
+nul
+
+# Configuración local
+.claude/
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Pytest cache
+.pytest_cache/

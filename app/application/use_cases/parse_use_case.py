@@ -89,34 +89,36 @@ class ParseUseCase:
             logger.info("Parsing completed with %d valid entries", len(filtered_result.entries))
             return ParseResponse(parse_result=filtered_result)
 
+        except ValueError as e:
+            logger.error(f"Invalid parsing configuration: {e}")
+            raise ParseRequestValidationError(f"Parsing failed due to invalid configuration: {e}") from e
         except Exception as e:
-            logger.error("Critical error during parsing operations")
-            # Preserve original exception context while re-raising
-            raise e
+            logger.exception(f"Critical error during parsing operations: {type(e).__name__}")
+            raise RuntimeError(f"Parsing operation failed: {e}") from e
 
     def _validate_request(self, request: ParseRequest) -> None:
         """
         Ensures request meets minimum validity requirements.
-        
+
         Validation Criteria:
-        1. Input text must contain non-whitespace content
+        1. Input text must contain non-whitespace content (if provided)
         2. At least one parsing rule must be provided
         3. All rules must have non-empty pattern definitions
-        
+
         Args:
             request: Parse request to validate
-            
+
         Raises:
             ValueError: With detailed message about validation failure
         """
-        # Validate input text presence
-        if not request.text.strip():
+        # Validate input text content (text can be None when used in pipeline with references)
+        if request.text is not None and not request.text.strip():
             raise ValueError("Text input cannot be empty or whitespace")
-            
+
         # Validate rules existence
         if not request.rules:
             raise ValueError("At least one parsing rule must be provided")
-            
+
         # Validate individual rule completeness
         for rule in request.rules:
             if not rule.pattern:
