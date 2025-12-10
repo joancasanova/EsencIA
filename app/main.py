@@ -179,7 +179,11 @@ class CommandProcessor:
             
             # Create parameters based on step type
             if step_type == "generate":
-                parameters = GenerateTextRequest(**step_data["parameters"])
+                gen_params = step_data["parameters"].copy()
+                # Parse parse_rules if present
+                if "parse_rules" in gen_params and gen_params["parse_rules"]:
+                    gen_params["parse_rules"] = CommandProcessor.parse_rules(gen_params["parse_rules"])
+                parameters = GenerateTextRequest(**gen_params)
             elif step_type == "parse":
                 parameters = ParseRequest(
                     rules=CommandProcessor.parse_rules(step_data["parameters"]["rules"]),

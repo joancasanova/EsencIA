@@ -223,6 +223,6 @@ class TestPipelineUseCaseInit:
 
         use_case = PipelineUseCase("custom-model")
 
-        mock_pipeline_service_class.assert_called_once_with("custom-model")
+        mock_pipeline_service_class.assert_called_once_with("custom-model", progress_callback=None)
         assert use_case.service is not None
         assert use_case.file_repo is not None

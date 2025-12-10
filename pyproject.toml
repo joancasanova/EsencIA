@@ -21,7 +21,8 @@ dependencies = [
     "nicegui>=3.3.0",
     "psutil>=5.9.0",
     "nvidia-ml-py>=12.0.0",
-    "python-dateutil>=2.8.0"
+    "python-dateutil>=2.8.0",
+    "compressed-tensors>=0.8.0"
 ]
 
 [project.optional-dependencies]

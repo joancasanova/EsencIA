@@ -1,6 +1,6 @@
 # domain/services/pipeline_service.py
 
-from typing import Any, Dict, List, Optional, Set, Tuple, Union, overload
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, overload
 import re
 import logging
 import itertools
@@ -11,6 +11,11 @@ from domain.model.entities.pipeline import PipelineStep, PipelineExecutionContex
 from domain.model.entities.generation import GenerateTextRequest, GeneratedResult
 from domain.model.entities.parsing import ParseRequest, ParseResult
 from domain.model.entities.verification import VerificationMethod, VerificationSummary, VerifyRequest
+from domain.model.entities.progress import (
+    ProgressCallback,
+    ProgressUpdate,
+    ProgressPhase
+)
 
 from domain.services.parse_service import ParseService
 from domain.services.verifier_service import VerifierService
@@ -32,14 +37,20 @@ class PipelineService:
     Service for executing multi-step pipelines with generation, parsing, and verification.
     """
 
-    def __init__(self, default_model_name: str):
+    def __init__(
+        self,
+        default_model_name: str,
+        progress_callback: Optional[ProgressCallback] = None
+    ):
         """
         Initializes the PipelineService with parsing, generation, and verification services.
 
         Args:
             default_model_name: The name of the language model to be used by default for all steps.
+            progress_callback: Optional callback para reportar progreso de carga y ejecucion
         """
         self.default_model_name = default_model_name
+        self._progress_callback = progress_callback
 
         self.parse_service = ParseService()
 
@@ -110,12 +121,37 @@ class PipelineService:
             existing_global_refs = self._context.global_references if self._context else {}
             self._context = PipelineExecutionContext(global_references=existing_global_refs)
 
+        # Report pipeline start
+        self._report_progress(
+            ProgressPhase.PIPELINE_START,
+            current=0,
+            total=len(steps),
+            message=f"Iniciando pipeline con {len(steps)} pasos"
+        )
+
         step_number = 0  # Initialize before loop to ensure it's defined in except block
         try:
             for step_number, step in enumerate(steps):
+                # Report step progress
+                self._report_progress(
+                    ProgressPhase.PIPELINE_STEP,
+                    current=step_number,
+                    total=len(steps),
+                    message=f"Ejecutando paso {step_number + 1}/{len(steps)}: {step.type}",
+                    details=step.type
+                )
+
                 self._validate_step_references(step, step_number)
                 step_result = self._execute_step(step, step_number)
                 self._store_result(step_number, step.type, step_result)
+
+            # Report pipeline complete
+            self._report_progress(
+                ProgressPhase.PIPELINE_COMPLETE,
+                current=len(steps),
+                total=len(steps),
+                message="Pipeline completado"
+            )
 
         except Exception as e:
             logger.error(f"Pipeline execution failed at step {step_number}: {str(e)}")
@@ -251,13 +287,14 @@ class PipelineService:
     def _execute_generate(self, step: PipelineStep, step_number: int) -> List[GeneratedResult]:
         """
         Executes a 'generate' step, handling prompt variations based on references.
+        If parse_rules are provided, applies parsing to extract variables from generated text.
 
         Args:
             step: The PipelineStep object for the generate step.
             step_number: The index of the current step.
 
         Returns:
-            A list of GeneratedResult objects.
+            A list of GeneratedResult objects, with parsed_data populated if parse_rules exist.
         """
         request: GenerateTextRequest = step.parameters
 
@@ -287,6 +324,24 @@ class PipelineService:
 
             for result in results:
                 result.reference_data = reference_dict
+
+                # Apply parsing if parse_rules are provided
+                if request.parse_rules:
+                    parse_result = self.parse_service.parse_text(
+                        text=result.content,
+                        rules=request.parse_rules
+                    )
+                    # Apply filter
+                    filtered_result = self.parse_service.filter_entries(
+                        parse_result=parse_result,
+                        filter_type=request.parse_output_filter,
+                        n=request.parse_output_limit,
+                        rules=request.parse_rules
+                    )
+                    # Store first entry as parsed_data (most common use case)
+                    if filtered_result.entries:
+                        result.parsed_data = filtered_result.entries[0]
+
             all_results.extend(results)
 
         return all_results
@@ -555,6 +610,9 @@ class PipelineService:
                 for generated_result in step_results:
                     content = f"output_{ref_index + 1}"
                     entry = {content: generated_result.content}
+                    # Also include parsed_data variables if available
+                    if isinstance(getattr(generated_result, 'parsed_data', None), dict):
+                        entry.update(generated_result.parsed_data)
                     new_system_prompt, new_user_prompt, new_reference_dict = self._process_placeholders(system_prompt, user_prompt, entry, current_reference_dict.copy())
                     generate_combinations(index + 1, new_system_prompt, new_user_prompt, new_reference_dict)
             elif step_type == "parse":
@@ -672,6 +730,37 @@ class PipelineService:
                 return []
         return reference_data
 
+    def _report_progress(
+        self,
+        phase: ProgressPhase,
+        current: int,
+        total: int,
+        message: str,
+        details: Optional[str] = None
+    ) -> None:
+        """
+        Reporta progreso si hay un callback configurado.
+
+        Args:
+            phase: Fase actual del proceso
+            current: Valor actual
+            total: Valor total
+            message: Mensaje descriptivo
+            details: Detalles adicionales
+        """
+        if self._progress_callback:
+            update = ProgressUpdate(
+                phase=phase,
+                current=current,
+                total=total,
+                message=message,
+                details=details
+            )
+            try:
+                self._progress_callback(update)
+            except Exception as e:
+                logger.warning(f"Error en callback de progreso: {e}")
+
     def _get_generate_service(self, model_name: str) -> GenerateService:
         """
         Retrieves or creates a GenerateService for the specified model.
@@ -694,9 +783,12 @@ class PipelineService:
             while len(self._generate_services_cache) >= MAX_CACHED_MODELS:
                 self._evict_oldest_model()
 
-            # Create and cache new service
+            # Create and cache new service with progress callback
             logger.info(f"Loading model '{model_name}' into cache")
-            self._generate_services_cache[model_name] = GenerateService(model_name)
+            self._generate_services_cache[model_name] = GenerateService(
+                model_name,
+                progress_callback=self._progress_callback
+            )
             self._cache_order.append(model_name)
             return self._generate_services_cache[model_name]
 

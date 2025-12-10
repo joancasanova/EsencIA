@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Literal, TYPE_CHECKING
 
 from config.settings import (
     MIN_TEMPERATURE,
@@ -10,6 +10,9 @@ from config.settings import (
     MIN_MAX_TOKENS,
     MAX_MAX_TOKENS
 )
+
+if TYPE_CHECKING:
+    from domain.model.entities.parsing import ParseRule
 
 @dataclass(frozen=True)
 class GenerationMetadata:
@@ -37,12 +40,13 @@ class GenerationMetadata:
 class GeneratedResult:
     """
     Complete record of a single generated text output with context.
-    
+
     Attributes:
         content: The generated text output
         metadata: Technical details about the generation process
         reference_data: Optional contextual data used in prompt templates
-        
+        parsed_data: Optional extracted variables from parsing the generated content
+
     Methods:
         to_dict: Serializes object for storage/transmission
         contains_reference: Checks for specific text in content
@@ -51,6 +55,7 @@ class GeneratedResult:
     content: str
     metadata: GenerationMetadata
     reference_data: Optional[Dict[str, str]] = None
+    parsed_data: Optional[Dict[str, str]] = None
     
     def to_dict(self):
         """Serializes object to JSON-friendly dictionary format."""
@@ -60,12 +65,13 @@ class GeneratedResult:
                 "model_name": self.metadata.model_name,
                 "system_prompt": self.metadata.system_prompt,
                 "user_prompt": self.metadata.user_prompt,
-                "temperature": self.metadata.temperature,  # Fixed from original code
+                "temperature": self.metadata.temperature,
                 "tokens_used": self.metadata.tokens_used,
                 "generation_time": self.metadata.generation_time,
                 "timestamp": self.metadata.timestamp.isoformat()
             },
-            "reference_data": self.reference_data
+            "reference_data": self.reference_data,
+            "parsed_data": self.parsed_data
         }
     
     def contains_reference(self, text: str) -> bool:
@@ -105,6 +111,9 @@ class GenerateTextRequest:
         num_sequences: Number of variations to generate (1-10 typical)
         max_tokens: Maximum length of generated text (1-4096 typical)
         temperature: Sampling temperature (0.0=deterministic, 1.0=default, 2.0=creative)
+        parse_rules: Optional list of parsing rules to extract variables from generated text
+        parse_output_filter: Filter for parsed results ('all', 'successful', 'first_n')
+        parse_output_limit: Limit for 'first_n' filter
 
     Raises:
         ValueError: If any parameter is outside valid range or empty
@@ -114,6 +123,9 @@ class GenerateTextRequest:
     num_sequences: int = 1
     max_tokens: int = 200
     temperature: float = 1.0
+    parse_rules: Optional[List["ParseRule"]] = None
+    parse_output_filter: Literal["all", "successful", "first_n"] = "all"
+    parse_output_limit: Optional[int] = None
 
     def __post_init__(self):
         """Validates request parameters after initialization."""
@@ -138,15 +150,42 @@ class GenerateTextRequest:
                 f"got {self.temperature}"
             )
 
+        # Validate parse filter configuration
+        if self.parse_output_filter == "first_n":
+            if self.parse_output_limit is None:
+                raise ValueError(
+                    "parse_output_limit is required when parse_output_filter is 'first_n'"
+                )
+            if self.parse_output_limit < 1:
+                raise ValueError(
+                    f"parse_output_limit must be >= 1 when parse_output_filter is 'first_n', "
+                    f"got {self.parse_output_limit}"
+                )
+
     def to_dict(self):
         """Serializes to API-friendly format."""
-        return {
+        result = {
             "system_prompt": self.system_prompt,
             "user_prompt": self.user_prompt,
             "num_sequences": self.num_sequences,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature
         }
+        if self.parse_rules:
+            result["parse_rules"] = [
+                {
+                    "name": rule.name,
+                    "pattern": rule.pattern,
+                    "mode": rule.mode.value,
+                    "secondary_pattern": rule.secondary_pattern,
+                    "fallback_value": rule.fallback_value
+                }
+                for rule in self.parse_rules
+            ]
+            result["parse_output_filter"] = self.parse_output_filter
+            if self.parse_output_limit is not None:
+                result["parse_output_limit"] = self.parse_output_limit
+        return result
 
 @dataclass
 class GenerateTextResponse:

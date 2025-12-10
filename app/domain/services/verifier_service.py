@@ -113,10 +113,17 @@ class VerifierService:
         system_prompt = method.system_prompt
         user_prompt = method.user_prompt
 
+        # Use method-specific LLM if configured, otherwise use default
+        if method.llm_config:
+            logger.debug(f"Using method-specific LLM '{method.llm_config}' for method '{method.name}'.")
+            generate_service = GenerateService(method.llm_config)
+        else:
+            generate_service = self.generate_service
+
         # Generate responses with error handling
         try:
             logger.debug(f"Generating {method.num_sequences} sequence(s) for verification method '{method.name}'.")
-            responses = self.generate_service.generate(
+            responses = generate_service.generate(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 num_sequences=method.num_sequences,
@@ -134,10 +141,17 @@ class VerifierService:
         try:
             generated_responses = [response.content for response in responses]
 
-            positive_responses = sum(
-                1 for r in responses
-                if any(vr.lower() in r.content.strip().lower() for vr in method.valid_responses)
-            )
+            # Comparar respuestas (con o sin ignorar mayúsculas)
+            if method.ignore_case:
+                positive_responses = sum(
+                    1 for r in responses
+                    if any(vr.lower() in r.content.strip().lower() for vr in method.valid_responses)
+                )
+            else:
+                positive_responses = sum(
+                    1 for r in responses
+                    if any(vr in r.content.strip() for vr in method.valid_responses)
+                )
             passed = positive_responses >= method.required_matches
 
             logger.debug(f"Method '{method.name}' => {positive_responses}/{len(responses)} positive responses. Passed={passed}")

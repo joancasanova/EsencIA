@@ -3,13 +3,18 @@
 import json
 import logging
 import traceback
-from typing import List
+from typing import List, Optional
 
 from config import DEFAULT_MODEL_NAME
 from domain.model.entities.pipeline import (
     PipelineRequest,
     PipelineResponse,
     PipelineExecutionError
+)
+from domain.model.entities.progress import (
+    ProgressCallback,
+    ProgressUpdate,
+    ProgressPhase
 )
 from domain.services.pipeline_service import PipelineService
 from infrastructure.file_repository import FileRepository
@@ -27,14 +32,20 @@ class PipelineUseCase:
     - Maintain data consistency across executions
     """
 
-    def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL_NAME,
+        progress_callback: Optional[ProgressCallback] = None
+    ):
         """
         Initializes pipeline components with model configuration.
 
         Args:
             model_name: Model identifier for all pipeline operations (generation and verification)
+            progress_callback: Optional callback para reportar progreso de carga y ejecucion
         """
-        self.service = PipelineService(model_name)
+        self._progress_callback = progress_callback
+        self.service = PipelineService(model_name, progress_callback=progress_callback)
         self.file_repo = FileRepository()
         logger.debug("Initialized PipelineUseCase with model: %s", model_name)
 
@@ -71,6 +82,30 @@ class PipelineUseCase:
             logger.exception(f"Pipeline execution failed: {type(e).__name__}: {e}")
             raise RuntimeError(f"Pipeline execution failed: {e}") from e
 
+    def _report_progress(
+        self,
+        phase: ProgressPhase,
+        current: int,
+        total: int,
+        message: str,
+        details: Optional[str] = None
+    ) -> None:
+        """
+        Reporta progreso si hay un callback configurado.
+        """
+        if self._progress_callback:
+            update = ProgressUpdate(
+                phase=phase,
+                current=current,
+                total=total,
+                message=message,
+                details=details
+            )
+            try:
+                self._progress_callback(update)
+            except Exception as e:
+                logger.warning(f"Error en callback de progreso: {e}")
+
     def execute_with_references(self,
                                request: PipelineRequest,
                                reference_entries: List[dict]) -> PipelineResponse:
@@ -96,6 +131,14 @@ class PipelineUseCase:
 
         for idx, entry in enumerate(reference_entries):
             try:
+                # Report entry progress
+                self._report_progress(
+                    ProgressPhase.ENTRY_START,
+                    current=idx,
+                    total=len(reference_entries),
+                    message=f"Procesando entrada {idx + 1}/{len(reference_entries)}"
+                )
+
                 logger.debug("Processing reference entry %d/%d", idx+1, len(reference_entries))
                 result = self._process_single_entry(request, entry)
 
@@ -108,6 +151,14 @@ class PipelineUseCase:
                     result.verification_references['to_verify']
                 )
                 cumulative_response.successful_entries += 1
+
+                # Report entry complete
+                self._report_progress(
+                    ProgressPhase.ENTRY_COMPLETE,
+                    current=idx + 1,
+                    total=len(reference_entries),
+                    message=f"Entrada {idx + 1}/{len(reference_entries)} completada"
+                )
 
                 logger.debug("Successfully processed entry %d", idx+1)
 

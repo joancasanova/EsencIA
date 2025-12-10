@@ -69,6 +69,8 @@ class VerificationMethod:
     required_matches: int
     max_tokens: int = 100
     temperature: float = 1.0
+    ignore_case: bool = True
+    llm_config: Optional[str] = None
 
     def __post_init__(self):
         """Validates method parameters after initialization."""

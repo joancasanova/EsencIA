@@ -8,6 +8,8 @@ import sys
 import json
 import platform
 import asyncio
+import queue
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
@@ -79,6 +81,7 @@ from domain.model.entities.parsing import ParseMode, ParseRule, ParseRequest
 from domain.model.entities.verification import VerificationMethod, VerificationMode, VerifyRequest
 from domain.model.entities.pipeline import PipelineStep, PipelineRequest
 from domain.model.entities.benchmark import BenchmarkConfig, BenchmarkEntry
+from domain.model.entities.progress import ProgressUpdate, ProgressPhase
 
 
 # =============================================================================
@@ -404,12 +407,16 @@ async def search_huggingface_models(query: str, limit: int = 15) -> List[Dict]:
 
                 # Filtrar modelos que NO son de generación de texto
                 # (embeddings, sentence-transformers, encoders, etc.)
+                # y modelos cuantizados no compatibles (GGUF, etc.)
                 model_id_lower = model_id.lower()
                 skip_patterns = [
+                    # Embeddings y encoders
                     'embed', 'embedding', 'sentence-transformer', 'bge-', 'e5-',
                     'gte-', 'instructor', 'encoder', 'retriev', 'rerank',
                     'clip', 'bert-base', 'bert-large', 'roberta', 'xlm-roberta',
-                    'minilm', 'mpnet', 'contriever', 'colbert', 'splade'
+                    'minilm', 'mpnet', 'contriever', 'colbert', 'splade',
+                    # Formatos cuantizados NO compatibles con transformers
+                    'gguf', 'ggml', '-gguf', '-ggml',
                 ]
                 if any(pattern in model_id_lower for pattern in skip_patterns):
                     continue
@@ -871,6 +878,50 @@ textarea::placeholder {
 .json-editor-textarea .q-field__native {
     height: 100% !important;
 }
+
+/* Tooltips - estilo unificado */
+.q-tooltip {
+    background: #1e293b !important;
+    color: #e2e8f0 !important;
+    font-size: 13px !important;
+    padding: 8px 12px !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(71, 85, 105, 0.5) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+    white-space: pre-line !important;
+}
+
+/* Slider de temperatura personalizado */
+.temp-slider .q-slider__track-container {
+    color: #90a1b9 !important;
+}
+.temp-slider .q-slider__track {
+    background: rgba(144, 161, 185, 0.3) !important;
+}
+.temp-slider .q-slider__selection {
+    background: #90a1b9 !important;
+}
+.temp-slider .q-slider__thumb {
+    color: #90a1b9 !important;
+}
+.temp-slider .q-slider__focus-ring {
+    background: rgba(144, 161, 185, 0.3) !important;
+}
+
+/* Checkboxes con color de fondo oscuro y borde */
+.q-checkbox__inner {
+    color: #151c30 !important;
+}
+.q-checkbox__inner--truthy {
+    color: #151c30 !important;
+}
+.q-checkbox__bg {
+    border: 1.5px solid #64748b !important;  /* slate-500 border */
+    border-radius: 3px !important;
+}
+.q-checkbox__inner--truthy .q-checkbox__bg {
+    border-color: #94a3b8 !important;  /* slate-400 cuando está activo */
+}
 </style>
 '''
 
@@ -1096,17 +1147,6 @@ PIPELINE_TEMPLATES = {
                     'temperature': 0.3
                 },
                 'uses_reference': True
-            },
-            {
-                'type': 'parse',
-                'parameters': {
-                    'rules': [
-                        {'name': 'adaptacion', 'mode': 'REGEX', 'pattern': r'.*', 'fallback_value': ''}
-                    ],
-                    'output_filter': 'all'
-                },
-                'uses_reference': True,
-                'reference_step_numbers': [0]
             }
         ],
         'variables': ['texto']
@@ -1144,20 +1184,12 @@ PIPELINE_TEMPLATES = {
                     'user_prompt': 'Del siguiente texto, extrae {campo}:\n\n{texto}',
                     'num_sequences': 1,
                     'max_tokens': 150,
-                    'temperature': 0.2
+                    'temperature': 0.2,
+                    'parse_rules': [
+                        {'name': 'dato', 'mode': 'KEYWORD', 'pattern': 'Dato:', 'secondary_pattern': '\n', 'fallback_value': 'no_encontrado'}
+                    ]
                 },
                 'uses_reference': True
-            },
-            {
-                'type': 'parse',
-                'parameters': {
-                    'rules': [
-                        {'name': 'dato', 'mode': 'KEYWORD', 'pattern': 'Dato:', 'secondary_pattern': '\n', 'fallback_value': 'no_encontrado'}
-                    ],
-                    'output_filter': 'successful'
-                },
-                'uses_reference': True,
-                'reference_step_numbers': [0]
             }
         ],
         'variables': ['texto', 'campo']
@@ -1175,20 +1207,12 @@ PIPELINE_TEMPLATES = {
                     'user_prompt': '{instruccion}',
                     'num_sequences': 2,
                     'max_tokens': 200,
-                    'temperature': 0.7
+                    'temperature': 0.7,
+                    'parse_rules': [
+                        {'name': 'contenido', 'mode': 'KEYWORD', 'pattern': 'Contenido:', 'secondary_pattern': '"', 'fallback_value': ''}
+                    ]
                 },
                 'uses_reference': True
-            },
-            {
-                'type': 'parse',
-                'parameters': {
-                    'rules': [
-                        {'name': 'contenido', 'mode': 'KEYWORD', 'pattern': 'Contenido:', 'secondary_pattern': '"', 'fallback_value': ''}
-                    ],
-                    'output_filter': 'successful'
-                },
-                'uses_reference': True,
-                'reference_step_numbers': [0]
             },
             {
                 'type': 'verify',
@@ -1210,7 +1234,7 @@ PIPELINE_TEMPLATES = {
                     'required_for_review': 0
                 },
                 'uses_reference': True,
-                'reference_step_numbers': [1]
+                'reference_step_numbers': [0]
             }
         ],
         'variables': ['instruccion']
@@ -1261,6 +1285,11 @@ def pipeline_page():
     loading_box = None
     steps_counter_label = None
     entries_counter_label = None
+    model_selector_ref = {'container': None, 'switch_to_edit': None}
+
+    # Referencias a campos de formulario para validación
+    # Estructura: field_refs[step_idx] = {'system_prompt': textarea_ref, 'user_prompt': textarea_ref, ...}
+    field_refs = {}
 
     # CSS para animación de error (shake) e inputs sutiles
     ui.add_css('''
@@ -1324,6 +1353,21 @@ def pipeline_page():
         .var-name-input .q-field__marginal {
             height: auto !important;
         }
+        /* Animación de loading para barra de progreso */
+        @keyframes loading-progress {
+            0% { width: 20%; opacity: 0.5; }
+            50% { width: 80%; opacity: 1; }
+            100% { width: 20%; opacity: 0.5; }
+        }
+        /* Ocultar spinners de inputs numéricos */
+        .q-field input[type="number"]::-webkit-outer-spin-button,
+        .q-field input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .q-field input[type="number"] {
+            -moz-appearance: textfield;
+        }
     ''')
 
     def detect_variables(steps: List[Dict]) -> set:
@@ -1377,7 +1421,13 @@ def pipeline_page():
             new_step = {
                 'type': 'parse',
                 'parameters': {
-                    'rules': [],
+                    'rules': [{
+                        'name': '',
+                        'mode': 'KEYWORD',
+                        'pattern': '',
+                        'secondary_pattern': '',
+                        'fallback_value': ''
+                    }],
                     'output_filter': 'all'
                 },
                 'uses_reference': True,
@@ -1387,7 +1437,17 @@ def pipeline_page():
             new_step = {
                 'type': 'verify',
                 'parameters': {
-                    'methods': [],
+                    'methods': [{
+                        'mode': 'eliminatory',
+                        'name': 'metodo_1',
+                        'system_prompt': '',
+                        'user_prompt': '',
+                        'num_sequences': 3,
+                        'valid_responses': [],
+                        'required_matches': 2,
+                        'max_tokens': 5,
+                        'temperature': 0.8
+                    }],
                     'required_for_confirmed': 1,
                     'required_for_review': 0
                 },
@@ -1451,31 +1511,43 @@ def pipeline_page():
     def add_parse_rule(step_idx: int):
         """Añade una regla de parsing."""
         if 0 <= step_idx < len(local_state['steps']):
-            rules = local_state['steps'][step_idx]['parameters'].get('rules', [])
+            step = local_state['steps'][step_idx]
+            if 'parameters' not in step:
+                step['parameters'] = {}
+            if 'rules' not in step['parameters']:
+                step['parameters']['rules'] = []
+            rules = step['parameters']['rules']
             rules.append({
-                'name': f'campo_{len(rules)+1}',
+                'name': '',
                 'mode': 'KEYWORD',
                 'pattern': '',
                 'secondary_pattern': '',
                 'fallback_value': ''
             })
-            local_state['steps'][step_idx]['parameters']['rules'] = rules
             refresh_builder()
 
     def add_verify_method(step_idx: int):
-        """Añade un método de verificación."""
+        """Añade un método de verificación con nombre incremental único."""
         if 0 <= step_idx < len(local_state['steps']):
             methods = local_state['steps'][step_idx]['parameters'].get('methods', [])
+
+            # Generar nombre único incremental
+            existing_names = {m.get('name', '') for m in methods}
+            counter = 1
+            while f'metodo_{counter}' in existing_names:
+                counter += 1
+
             methods.append({
-                'mode': 'cumulative',
-                'name': f'verificar_{len(methods)+1}',
-                'system_prompt': 'Responde Yes o No.',
+                'mode': 'eliminatory',
+                'name': f'metodo_{counter}',
+                'system_prompt': '',
                 'user_prompt': '',
                 'num_sequences': 3,
-                'valid_responses': ['Yes', 'yes', 'Si', 'si'],
+                'valid_responses': [],
                 'required_matches': 2,
                 'max_tokens': 5,
-                'temperature': 0.8
+                'temperature': 0.8,
+                'ignore_case': True
             })
             local_state['steps'][step_idx]['parameters']['methods'] = methods
             refresh_builder()
@@ -1914,6 +1986,9 @@ def pipeline_page():
                 else:
                     render_steps_accordion()
         update_counters()
+        # Actualizar checklist de ejecución si existe
+        if 'update_execution_checklist' in local_state and local_state['update_execution_checklist']:
+            local_state['update_execution_checklist']()
 
     def refresh_data_section():
         """Refresca la sección de datos."""
@@ -1921,45 +1996,43 @@ def pipeline_page():
         with data_container:
             render_data_section()
         update_counters()
+        # Actualizar checklist de ejecución si existe
+        if 'update_execution_checklist' in local_state and local_state['update_execution_checklist']:
+            local_state['update_execution_checklist']()
 
     def render_steps_accordion():
         """Renderiza los pasos como barras desplegables (accordion)."""
         step_colors = {
             'generate': ('purple', 'auto_awesome', 'Generar'),
-            'parse': ('purple', 'find_in_page', 'Detectar'),
+            'parse': ('purple', 'find_in_page', 'Parsear'),
             'verify': ('purple', 'verified', 'Verificar')
         }
 
         # Botones para añadir pasos con etiqueta clara
         with ui.row().classes('w-full items-center gap-3'):
-            ui.label('Añadir:').classes('text-xs text-slate-400 font-medium')
-
             with ui.button(on_click=lambda: add_step('generate')).props('flat dense no-caps').classes(
                 'h-8 pl-2 pr-3 bg-slate-700/50 border border-dashed border-slate-500/50 rounded-lg '
                 'hover:bg-purple-500/20 hover:border-purple-500/50 transition-all flex items-center'
             ):
                 ui.icon('add', size='xs').classes('text-purple-400 mr-1.5')
-                ui.label('Generar').classes('text-xs text-slate-300 leading-none')
+                ui.label('GENERAR').classes('text-xs text-slate-300 leading-none uppercase')
 
-            with ui.button(on_click=lambda: add_step('parse')).props('flat dense no-caps').classes(
-                'h-8 pl-2 pr-3 bg-slate-700/50 border border-dashed border-slate-500/50 rounded-lg '
-                'hover:bg-purple-500/20 hover:border-purple-500/50 transition-all flex items-center'
-            ):
-                ui.icon('add', size='xs').classes('text-purple-400 mr-1.5')
-                ui.label('Detectar').classes('text-xs text-slate-300 leading-none')
+            # Parse step está integrado en Generate, pero el botón se mantiene oculto para
+            # poder cargar pipelines antiguos con pasos parse separados
+            # with ui.button(on_click=lambda: add_step('parse'))...
 
             with ui.button(on_click=lambda: add_step('verify')).props('flat dense no-caps').classes(
                 'h-8 pl-2 pr-3 bg-slate-700/50 border border-dashed border-slate-500/50 rounded-lg '
                 'hover:bg-purple-500/20 hover:border-purple-500/50 transition-all flex items-center'
             ):
                 ui.icon('add', size='xs').classes('text-purple-400 mr-1.5')
-                ui.label('Verificar').classes('text-xs text-slate-300 leading-none')
+                ui.label('VERIFICAR').classes('text-xs text-slate-300 leading-none uppercase')
 
         if not local_state['steps']:
             with ui.column().classes('w-full items-center justify-center py-8 gap-2'):
                 ui.icon('touch_app', size='lg').classes('text-slate-600')
                 ui.label('Sin pasos configurados').classes('text-slate-400 text-sm')
-                ui.label('Añade pasos con los botones de arriba').classes('text-xs text-slate-600')
+                ui.label('Añade pasos con los botones de generar y verificar').classes('text-xs text-slate-600')
         else:
             for idx, step in enumerate(local_state['steps']):
                 stype = step.get('type', 'generate')
@@ -1972,7 +2045,7 @@ def pipeline_page():
                     summary = f"Temp: {params.get('temperature', 0.7)} · Max: {params.get('max_tokens', 200)} tokens"
                 elif stype == 'parse':
                     rules_count = len(params.get('rules', []))
-                    summary = f"{rules_count} regla{'s' if rules_count != 1 else ''} de extracción"
+                    summary = f"{rules_count} regla{'s' if rules_count != 1 else ''} de parseo"
                 elif stype == 'verify':
                     methods_count = len(params.get('methods', []))
                     summary = f"{methods_count} método{'s' if methods_count != 1 else ''} de verificación"
@@ -1985,7 +2058,7 @@ def pipeline_page():
                     with ui.element('div').classes(
                         f'w-full bg-slate-800/60 border border-slate-600/40 rounded-lg '
                         f'{"rounded-b-none border-b-0" if is_expanded else ""} '
-                        'cursor-pointer hover:bg-purple-500/10 hover:border-purple-500/50 transition-all overflow-hidden'
+                        'cursor-pointer hover:bg-purple-500/10 hover:border-purple-500/50 transition-all'
                     ).on('click', lambda i=idx: toggle_step_expand(i)):
                         with ui.row().classes('w-full items-center justify-between px-3 py-2'):
                             # Lado izquierdo: número, tipo, resumen
@@ -2052,7 +2125,7 @@ def pipeline_page():
 
         step_colors = {
             'generate': ('purple', 'auto_awesome', 'Generar'),
-            'parse': ('purple', 'find_in_page', 'Detectar'),
+            'parse': ('purple', 'find_in_page', 'Parsear'),
             'verify': ('purple', 'verified', 'Verificar')
         }
         color, icon, title = step_colors.get(stype, ('slate', 'help', 'Paso'))
@@ -2078,7 +2151,13 @@ def pipeline_page():
             """Retorna lista de nombres de variables que produce un paso."""
             step_type = step_data.get('type', 'generate')
             if step_type == 'generate':
-                return [f'output_{step_idx + 1}']
+                vars_list = [f'output_{step_idx + 1}']
+                # Incluir variables de parse_rules integradas
+                parse_rules = step_data.get('parameters', {}).get('parse_rules', [])
+                for rule in parse_rules:
+                    if rule.get('name'):
+                        vars_list.append(rule['name'])
+                return vars_list
             elif step_type == 'parse':
                 rules = step_data.get('parameters', {}).get('rules', [])
                 return [rule['name'] for rule in rules if rule.get('name')]
@@ -2123,7 +2202,7 @@ def pipeline_page():
             with ui.row().classes('w-full flex-wrap items-center gap-1.5 px-2 py-1.5 bg-slate-800/40 rounded-b border border-t-0 border-slate-600/50'):
                 # Label explicativo
                 ui.icon('add_link', size='xs').classes('text-slate-400')
-                ui.label('Insertar variable:').classes('text-xs text-slate-400 mr-1')
+                ui.label('Insertar:').classes('text-xs text-slate-400 mr-1')
 
                 for var in variables:
                     var_text = f'{{{var["name"]}}}'
@@ -2136,11 +2215,7 @@ def pipeline_page():
                         tooltip_text = f'Variable de entrada. Click para insertar {{{var["name"]}}}'
                     else:
                         step_num = var['step'] + 1
-                        field_name = var['name'].split('_')[0] if '_' in var['name'] else var['name']
-                        if field_name in ('content', 'output'):
-                            display_name = f'Paso {step_num}'
-                        else:
-                            display_name = f'Paso {step_num}: {field_name}'
+                        display_name = f'Paso {step_num}: {{{var["name"]}}}'
                         tooltip_text = f'{type_names.get(var["type"], "Output")} del paso {step_num}. Click para insertar la variable'
 
                     async def insert_var_at_cursor(v=var_text, fld=field, i=idx, ta=textarea_element):
@@ -2174,18 +2249,19 @@ def pipeline_page():
                     with ui.button(on_click=insert_var_at_cursor).props('flat dense no-caps color=none').classes(
                         'px-2 py-0.5 min-h-0 hover:bg-slate-700/50 transition-all'
                     ):
-                        ui.label(display_name).classes('font-mono text-xs text-slate-400 normal-case')
+                        ui.label(display_name).classes('font-mono text-xs text-slate-200 normal-case')
                         ui.tooltip(tooltip_text).classes('bg-slate-800 text-slate-200')
 
         with ui.column().classes('w-full gap-3'):
             # === SECCIÓN: PROMPTS ===
             with ui.column().classes('w-full gap-2'):
+                # Inicializar referencias para este paso
+                if idx not in field_refs:
+                    field_refs[idx] = {}
+
                 # System Prompt
                 with ui.column().classes('w-full gap-0'):
-                    with ui.row().classes('items-center gap-1.5'):
-                        ui.label('System Prompt').classes('text-xs font-medium text-slate-300 uppercase')
-                        with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                            ui.tooltip('Define el rol y comportamiento del modelo').classes('bg-slate-800 text-slate-200')
+                    ui.label('System Prompt').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Define el rol y comportamiento del modelo')
 
                     # Contenedor para textarea + chips (textarea primero para obtener su referencia)
                     has_vars = bool(get_available_variables())
@@ -2195,14 +2271,12 @@ def pipeline_page():
                             placeholder='Eres un asistente capaz de...',
                             on_change=lambda e, i=idx: update_step_param(i, 'system_prompt', e.value)
                         ).props('outlined dark dense rows=1 autogrow').classes('w-full input-subtle' + (' rounded-b-none' if has_vars else ''))
+                        field_refs[idx]['system_prompt'] = system_textarea
                         render_variable_chips(system_textarea, 'system_prompt')
 
                 # User Prompt
                 with ui.column().classes('w-full gap-0 mt-2'):
-                    with ui.row().classes('items-center gap-1.5'):
-                        ui.label('User Prompt').classes('text-xs font-medium text-slate-300 uppercase')
-                        with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                            ui.tooltip('Instrucciones específicas para cada entrada').classes('bg-slate-800 text-slate-200')
+                    ui.label('User Prompt').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Instrucciones específicas para cada entrada')
 
                     # Contenedor para textarea + chips
                     has_vars = bool(get_available_variables())
@@ -2212,6 +2286,7 @@ def pipeline_page():
                             placeholder='Analiza el siguiente texto: {texto}',
                             on_change=lambda e, i=idx: update_step_param(i, 'user_prompt', e.value)
                         ).props('outlined dark dense rows=1 autogrow').classes('w-full input-subtle' + (' rounded-b-none' if has_vars else ''))
+                        field_refs[idx]['user_prompt'] = user_textarea
                         render_variable_chips(user_textarea, 'user_prompt')
 
             # === SECCIÓN: REFERENCIAS + PARÁMETROS (en fila) ===
@@ -2222,10 +2297,8 @@ def pipeline_page():
                 with ui.column().classes('flex-1 gap-2'):
                     # === REFERENCIAS A PASOS ANTERIORES ===
                     with ui.row().classes('items-center gap-1.5'):
-                        ui.icon('data_object').classes('text-slate-400 text-sm')
-                        ui.label('Referenciar outputs de pasos anteriores').classes('text-xs font-medium text-slate-300 uppercase')
-                        with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                            ui.tooltip('Selecciona pasos anteriores para usar sus outputs como variables en tus prompts.\nPodrás insertar su valor en el prompt usando llaves como {output} ó pulsando el botón "Insertar variable".').classes('bg-slate-800 text-slate-200 whitespace-pre-line')
+                        ui.icon('data_object').classes('text-slate-400 text-sm -mt-0.5')
+                        ui.label('Referenciar outputs de pasos anteriores').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Selecciona pasos anteriores para usar sus outputs como variables en tus prompts.\nPodrás insertar su valor en el prompt pulsando el botón "Insertar" que aparecerá bajo el campo de texto del prompt.')
 
                     if idx > 0:
                         current_refs = step.get('reference_step_numbers', [])
@@ -2234,27 +2307,25 @@ def pipeline_page():
                                 prev_step = local_state['steps'][prev_idx]
                                 prev_type = prev_step.get('type', 'generate')
                                 type_icons = {'generate': 'auto_awesome', 'parse': 'find_in_page', 'verify': 'verified'}
-                                type_names = {'generate': 'Generar', 'parse': 'Detectar', 'verify': 'Verificar'}
+                                type_names = {'generate': 'Generar', 'parse': '', 'verify': 'Verificar'}
                                 is_checked = prev_idx in current_refs
 
                                 # Obtener variables que produce este paso
                                 step_vars = get_step_output_variables(prev_step, prev_idx)
                                 vars_display = ', '.join(f'{{{v}}}' for v in step_vars) if step_vars else '(sin variables establecidas)'
 
-                                with ui.row().classes('w-full items-center gap-1 py-2'):
+                                with ui.row().classes('w-full items-center gap-0.5 py-1 ml-2'):
                                     cb = ui.checkbox(
                                         value=is_checked,
                                         on_change=lambda e, i=idx, r=prev_idx: toggle_reference_step(i, r, e.value)
-                                    ).props('dense color=purple')
-                                    ui.label(f'Paso {prev_idx + 1}:').classes('text-base text-slate-300 cursor-pointer select-none').style('margin-top: -1px').on('click', lambda _, c=cb: c.set_value(not c.value))
-                                    ui.label(type_names.get(prev_type, prev_type)).classes('text-base text-slate-300 cursor-pointer select-none').style('margin-top: -1px').on('click', lambda _, c=cb: c.set_value(not c.value))
-                                    # Separador visual
-                                    ui.label('→').classes('text-slate-500 mx-1')
-                                    # Variables disponibles
-                                    vars_classes = 'text-sm text-slate-400 font-mono' if step_vars else 'text-sm text-slate-400 italic'
+                                    ).props('dense size=sm')
+                                    ui.label(f'Paso {prev_idx + 1}:').classes('text-sm text-slate-400 cursor-pointer select-none ml-0.5').on('click', lambda _, c=cb: c.set_value(not c.value))
+                                    ui.label(type_names.get(prev_type, prev_type)).classes('text-sm text-slate-400 cursor-pointer select-none').on('click', lambda _, c=cb: c.set_value(not c.value))
+                                    ui.label('→').classes('text-slate-500 text-xs mx-0.5')
+                                    vars_classes = 'text-xs text-slate-500 font-mono' if step_vars else 'text-xs text-slate-500 italic'
                                     ui.label(vars_display).classes(vars_classes)
                     else:
-                        ui.label('(primer paso, sin referencias disponibles)').classes('text-xs text-slate-400 italic mt-1')
+                        ui.label('(primer paso, sin referencias disponibles)').classes('text-xs text-slate-400 italic mt-1 ml-2')
 
                 # --- COLUMNA DERECHA: PARÁMETROS ---
                 with ui.column().classes('flex-1 gap-2'):
@@ -2267,10 +2338,7 @@ def pipeline_page():
                         # Temperatura
                         with ui.column().classes('gap-1 flex-1'):
                             with ui.row().classes('w-full justify-between items-center'):
-                                with ui.row().classes('items-center gap-1'):
-                                    ui.label('Temperatura').classes('text-xs text-slate-400')
-                                    with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                                        ui.tooltip('Controla la creatividad del modelo.\n0 = Respuestas más predecibles\n2 = Respuestas más variadas').classes('bg-slate-800 text-slate-200 whitespace-pre-line')
+                                ui.label('Temperatura').classes('text-xs text-slate-400 cursor-help').tooltip('Controla la creatividad del modelo.\n0 = Respuestas más predecibles\n2 = Respuestas más variadas')
                                 temp_label = ui.label(f'{params.get("temperature", 0.7):.1f}').classes('text-xs text-slate-300 font-mono')
 
                             def on_temp_change(e, i=idx):
@@ -2281,17 +2349,14 @@ def pipeline_page():
                                 value=params.get('temperature', 0.7),
                                 min=0, max=2, step=0.1,
                                 on_change=on_temp_change
-                            ).props('color=purple').classes('w-full')
+                            ).classes('w-full temp-slider')
                             with ui.row().classes('w-full justify-between -mt-1'):
                                 ui.label('Preciso').classes('text-[10px] text-slate-500')
                                 ui.label('Creativo').classes('text-[10px] text-slate-500')
 
                         # Max Tokens
                         with ui.column().classes('gap-1 w-21 ml-4'):
-                            with ui.row().classes('items-center gap-1'):
-                                ui.label('Max Tokens').classes('text-xs text-slate-400')
-                                with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                                    ui.tooltip('Longitud máxima de la respuesta generada (1-4096)').classes('bg-slate-800 text-slate-200')
+                            ui.label('Max Tokens').classes('text-xs text-slate-400 cursor-help').tooltip('Longitud máxima de la respuesta generada (1-4096)')
                             ui.number(
                                 value=params.get('max_tokens', 200),
                                 min=1, max=4096,
@@ -2300,15 +2365,104 @@ def pipeline_page():
 
                         # Secuencias
                         with ui.column().classes('gap-1 w-20'):
-                            with ui.row().classes('items-center gap-1'):
-                                ui.label('Secuencias').classes('text-xs text-slate-400')
-                                with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                                    ui.tooltip('Número de variaciones a generar por cada entrada (1-10)').classes('bg-slate-800 text-slate-200')
+                            ui.label('Secuencias').classes('text-xs text-slate-400 cursor-help').tooltip('Número de variaciones a generar por cada entrada (1-10)')
                             ui.number(
                                 value=params.get('num_sequences', 1),
                                 min=1, max=10,
                                 on_change=lambda e, i=idx: update_step_param(i, 'num_sequences', int(e.value) if e.value else 1)
                             ).props('outlined dark dense color=purple input-class="text-center !py-1"').classes('w-full')
+
+            # === SECCIÓN: CREAR VARIABLES ===
+            ui.element('div').classes('w-full h-px bg-slate-700/50 my-1')
+
+            with ui.column().classes('w-full gap-2'):
+                has_parsing = bool(params.get('parse_rules'))
+
+                with ui.row().classes('w-full items-center gap-1.5'):
+                    ui.switch(
+                        value=has_parsing,
+                        on_change=lambda e, i=idx: toggle_generate_parsing(i, e.value)
+                    ).props('dense color=purple')
+                    ui.label('Crear variables a partir del texto generado').classes('text-xs font-medium text-slate-300 uppercase mt-px cursor-help').tooltip('Define patrones para crear variables a partir del texto generado.\nLas variables creadas estarán disponibles para pasos siguientes.')
+
+                if has_parsing:
+                    ui.element('div').classes('h-1')  # Espacio entre toggle y reglas
+                    parse_rules = params.get('parse_rules', [])
+
+                    for r_idx, rule in enumerate(parse_rules):
+                        # Separador entre reglas
+                        if r_idx > 0:
+                            ui.element('div').classes('w-full h-px bg-slate-700/50 my-2')
+
+                        # Layout: número (con X al hover) | campos
+                        with ui.row().classes('w-full gap-3'):
+                            # Número a la izquierda (se convierte en X al hover), centrado verticalmente
+                            with ui.element('div').classes('w-5 flex items-center justify-center relative group/rule self-center'):
+                                ui.label(f'#{r_idx + 1}').classes('text-xs text-slate-500 group-hover/rule:opacity-0 transition-opacity')
+                                ui.button(
+                                    icon='close',
+                                    on_click=lambda si=idx, ri=r_idx: remove_generate_parse_rule(si, ri)
+                                ).props('flat round size=xs color=none').classes(
+                                    '!text-slate-500 hover:!text-red-400 absolute opacity-0 group-hover/rule:opacity-100 transition-opacity'
+                                )
+
+                            # Campos
+                            with ui.column().classes('flex-1 gap-2'):
+                                with ui.row().classes('w-full gap-2'):
+                                    ui.input(
+                                        label='Nombre de variable',
+                                        value=rule.get('name', ''),
+                                        on_change=lambda e, si=idx, ri=r_idx: update_generate_parse_rule(si, ri, 'name', e.value)
+                                    ).props('outlined dark dense color=purple').classes('w-44 input-subtle').tooltip('Nombre de la variable donde se guardará el dato extraído')
+
+                                    ui.select(
+                                        label='Modo',
+                                        options=['KEYWORD', 'REGEX'],
+                                        value=rule.get('mode', 'KEYWORD'),
+                                        on_change=lambda e, si=idx, ri=r_idx: update_generate_parse_rule(si, ri, 'mode', e.value)
+                                    ).props('outlined dark dense color=purple options-dark popup-content-class="!bg-slate-800"').classes('w-32 input-subtle').tooltip('KEYWORD: extrae texto entre dos delimitadores\nREGEX: captura con expresión regular')
+
+                                    ui.input(
+                                        label='Fallback',
+                                        value=rule.get('fallback_value', ''),
+                                        on_change=lambda e, si=idx, ri=r_idx: update_generate_parse_rule(si, ri, 'fallback_value', e.value)
+                                    ).props('outlined dark dense color=purple').classes('w-28 input-subtle').tooltip('Valor por defecto si no se encuentran coincidencias')
+
+                                with ui.row().classes('w-full gap-2'):
+                                    is_keyword_mode = rule.get('mode', 'KEYWORD') == 'KEYWORD'
+                                    ui.input(
+                                        label='Extraer desde' if is_keyword_mode else 'Patrón regex',
+                                        value=rule.get('pattern', ''),
+                                        on_change=lambda e, si=idx, ri=r_idx: update_generate_parse_rule(si, ri, 'pattern', e.value)
+                                    ).props('outlined dark dense color=purple').classes('flex-1 input-subtle').tooltip('Delimitador inicial (se excluye del resultado).\nExtrae lo que viene DESPUÉS de este texto.' if is_keyword_mode else 'Expresión regular para capturar el dato')
+
+                                    if is_keyword_mode:
+                                        ui.input(
+                                            label='Hasta',
+                                            value=rule.get('secondary_pattern', ''),
+                                            on_change=lambda e, si=idx, ri=r_idx: update_generate_parse_rule(si, ri, 'secondary_pattern', e.value)
+                                        ).props('outlined dark dense color=purple').classes('flex-1 input-subtle').tooltip('Delimitador final (se excluye del resultado).\nExtrae hasta ANTES de este texto.\nSi está vacío, extrae hasta el final.')
+
+                    # Fila con botón añadir y filtro
+                    with ui.row().classes('w-full items-center justify-between'):
+                        # Botón añadir regla (icono + texto clickable)
+                        ui.button('VARIABLE', icon='add', on_click=lambda i=idx: add_generate_parse_rule(i)).props('flat dense size=md color=none').classes('!text-purple-400 hover:!text-purple-300 !px-1 uppercase')
+
+                        # Toggle de filtro (solo mostrar si hay más de una regla)
+                        if len(parse_rules) > 1:
+                            current_filter = params.get('parse_output_filter', 'all')
+                            is_strict = current_filter == 'successful'
+
+                            def on_strict_toggle(e, i=idx):
+                                new_filter = 'successful' if e.value else 'all'
+                                update_step_param(i, 'parse_output_filter', new_filter)
+
+                            with ui.row().classes('items-center gap-2'):
+                                ui.switch(
+                                    value=is_strict,
+                                    on_change=on_strict_toggle
+                                ).props('dense size=sm color=purple')
+                                ui.label('Solo completos').classes('text-xs text-slate-400 cursor-help').tooltip('Activado: solo incluye resultados donde TODAS las variables se extrajeron correctamente.\nDesactivado: incluye todos los resultados, incluso parciales.')
 
             # === SECCIÓN: MODELO ESPECÍFICO ===
             ui.element('div').classes('w-full h-px bg-slate-700/50 my-1')
@@ -2325,11 +2479,10 @@ def pipeline_page():
 
                 with ui.row().classes('w-full items-center gap-1.5'):
                     ui.switch(value=has_custom_model, on_change=on_model_toggle).props('dense color=purple')
-                    ui.label('Usar modelo específico para este paso').classes('text-xs font-medium text-slate-300 uppercase')
-                    with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                        ui.tooltip('Puedes usar un modelo específico diferente al LLM seleccionado general para este paso').classes('bg-slate-800 text-slate-200')
+                    ui.label('Usar modelo específico para este paso').classes('text-xs font-medium text-slate-300 uppercase mt-px cursor-help').tooltip('Puedes usar un modelo específico diferente al LLM seleccionado general para este paso')
 
                 if has_custom_model:
+                    ui.element('div').classes('h-1')  # Espacio entre toggle y selector
                     current_model = step.get('llm_config', '')
                     step_model_info = step.get('llm_config_info', {})
 
@@ -2556,9 +2709,9 @@ def pipeline_page():
                                         'h-10 px-3 bg-slate-700/50 border border-dashed border-slate-500/50 rounded-lg '
                                         'hover:bg-purple-500/10 hover:border-purple-500/50 transition-all'
                                     ):
-                                        with ui.row().classes('items-center gap-1'):
-                                            ui.icon('folder_open', size='xs').classes('text-purple-400')
-                                            ui.label('Local').classes('text-xs text-slate-300')
+                                        with ui.row().classes('items-center gap-1.5'):
+                                            ui.icon('folder_open', size='xs').classes('text-slate-400')
+                                            ui.label('Local').classes('text-xs text-slate-300 leading-none')
                             else:
                                 # Vista de modelo seleccionado
                                 compat = model_info.get('compat_status') if model_info else None
@@ -2622,181 +2775,452 @@ def pipeline_page():
         params = step.get('parameters', {})
         rules = params.get('rules', [])
 
-        with ui.column().classes('w-full gap-4'):
-            # Reglas de parsing
-            ui.label('Reglas de extracción').classes('text-sm text-slate-400')
-            ui.label('Define cómo extraer datos del texto generado').classes('text-xs text-slate-400 -mt-2')
+        with ui.column().classes('w-full gap-3'):
+            # === SECCIÓN: REGLAS DE EXTRACCIÓN ===
+            with ui.column().classes('w-full gap-2'):
+                ui.label('Reglas de extracción').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Define patrones para extraer datos del texto.\nCada regla busca un fragmento y lo guarda en una variable.')
 
-            if not rules:
-                with ui.row().classes('items-center gap-2 p-3 bg-slate-900/30 rounded'):
-                    ui.icon('info', size='xs').classes('text-slate-400')
-                    ui.label('No hay reglas. Añade una regla para extraer datos.').classes('text-slate-400 text-sm')
+                for r_idx, rule in enumerate(rules):
+                    # Separador entre reglas (no antes de la primera)
+                    if r_idx > 0:
+                        ui.element('div').classes('w-full h-px bg-slate-700/50 my-2')
 
-            for r_idx, rule in enumerate(rules):
-                with ui.card().classes('w-full bg-slate-900/30 p-3'):
-                    # Primera fila: Nombre, Modo, Eliminar
-                    with ui.row().classes('w-full gap-2 items-center justify-between'):
-                        with ui.row().classes('gap-2 items-end'):
-                            ui.input(
-                                label='Nombre variable',
-                                value=rule.get('name', ''),
-                                placeholder='ej: contenido',
-                                on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'name', e.value)
-                            ).props('outlined dark dense').classes('w-36').tooltip('Nombre de la variable extraída')
+                    # Layout: número (con X al hover) | campos
+                    with ui.row().classes('w-full items-start gap-3'):
+                        # Número a la izquierda (se convierte en X al hover)
+                        with ui.element('div').classes('w-5 h-8 flex items-center justify-center relative group/rule'):
+                            ui.label(f'#{r_idx + 1}').classes('text-xs text-slate-500 group-hover/rule:opacity-0 transition-opacity')
+                            ui.button(
+                                icon='close',
+                                on_click=lambda si=idx, ri=r_idx: remove_parse_rule(si, ri)
+                            ).props('flat round size=xs color=none').classes(
+                                '!text-slate-500 hover:!text-red-400 absolute opacity-0 group-hover/rule:opacity-100 transition-opacity'
+                            )
 
-                            ui.select(
-                                label='Modo',
-                                options=['KEYWORD', 'REGEX'],
-                                value=rule.get('mode', 'KEYWORD'),
-                                on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'mode', e.value)
-                            ).props('outlined dark dense').classes('w-28').tooltip('KEYWORD: busca texto literal\nREGEX: usa expresión regular')
+                        # Campos
+                        with ui.column().classes('flex-1 gap-2'):
+                            with ui.row().classes('w-full gap-2'):
+                                ui.input(
+                                    label='Nombre de variable',
+                                    value=rule.get('name', ''),
+                                    on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'name', e.value)
+                                ).props('outlined dark dense').classes('w-36 input-subtle').tooltip('Nombre de la variable donde se guardará el dato extraído')
 
-                        ui.button(icon='delete', on_click=lambda si=idx, ri=r_idx: remove_parse_rule(si, ri)).props('flat round size=sm color=red').tooltip('Eliminar regla')
+                                ui.select(
+                                    label='Modo',
+                                    options=['KEYWORD', 'REGEX'],
+                                    value=rule.get('mode', 'KEYWORD'),
+                                    on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'mode', e.value)
+                                ).props('outlined dark dense').classes('w-36 input-subtle').tooltip('KEYWORD: busca texto literal\nREGEX: expresión regular')
 
-                    # Segunda fila: Patrón principal
-                    ui.input(
-                        label='Patrón principal',
-                        value=rule.get('pattern', ''),
-                        placeholder='ej: Contenido: o regex: .*',
-                        on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'pattern', e.value)
-                    ).props('outlined dark dense').classes('w-full mt-2').tooltip('Texto o regex para encontrar el inicio del dato')
+                            with ui.row().classes('w-full gap-2'):
+                                ui.input(
+                                    label='Extraer desde',
+                                    value=rule.get('pattern', ''),
+                                    on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'pattern', e.value)
+                                ).props('outlined dark dense').classes('flex-1 input-subtle').tooltip('Texto o patrón que marca DÓNDE empieza el dato')
 
-                    # Tercera fila: Patrón secundario y Valor por defecto
-                    with ui.row().classes('gap-2 mt-2'):
-                        ui.input(
-                            label='Patrón fin (secundario)',
-                            value=rule.get('secondary_pattern', ''),
-                            placeholder='ej: \\n o "',
-                            on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'secondary_pattern', e.value)
-                        ).props('outlined dark dense').classes('flex-1').tooltip('Texto que marca el final del dato a extraer')
+                                ui.input(
+                                    label='Hasta',
+                                    value=rule.get('secondary_pattern', ''),
+                                    on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'secondary_pattern', e.value)
+                                ).props('outlined dark dense').classes('flex-1 input-subtle').tooltip('Solo KEYWORD: texto donde TERMINA el dato')
 
-                        ui.input(
-                            label='Valor por defecto',
-                            value=rule.get('fallback_value', ''),
-                            placeholder='ej: no_encontrado',
-                            on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'fallback_value', e.value)
-                        ).props('outlined dark dense').classes('flex-1').tooltip('Valor si no se encuentra el patrón')
+                                ui.input(
+                                    label='Si falla',
+                                    value=rule.get('fallback_value', ''),
+                                    on_change=lambda e, si=idx, ri=r_idx: update_parse_rule(si, ri, 'fallback_value', e.value)
+                                ).props('outlined dark dense').classes('w-28 input-subtle').tooltip('Valor por defecto si no encuentra')
 
-            ui.button('+ Añadir regla', icon='add', on_click=lambda i=idx: add_parse_rule(i)).props('flat size=sm').classes('text-amber-400')
+                # Botón añadir alineado con el número
+                with ui.row().classes('w-full items-center gap-3'):
+                    ui.element('div').classes('w-5')  # Spacer para alinear con números
+                    with ui.button(icon='add', on_click=lambda i=idx: add_parse_rule(i)).props('flat round size=sm color=none').classes('!text-purple-400 hover:!text-purple-300'):
+                        ui.tooltip('Añadir regla de extracción')
 
-            # Filtro de salida
-            ui.label('Configuración de salida').classes('text-sm text-slate-400 mt-2')
-            with ui.row().classes('gap-4'):
-                ui.select(
-                    label='Filtro de resultados',
-                    options=['all', 'successful', 'failed'],
-                    value=params.get('output_filter', 'all'),
-                    on_change=lambda e, i=idx: update_step_param(i, 'output_filter', e.value)
-                ).props('outlined dark dense').classes('w-40').tooltip('all: todos los resultados\nsuccessful: solo exitosos\nfailed: solo fallidos')
+            # === SECCIÓN: CONFIGURACIÓN DE SALIDA ===
+            ui.element('div').classes('w-full h-px bg-slate-700/50 my-1')
+
+            with ui.column().classes('w-full gap-2'):
+                with ui.row().classes('items-center gap-1.5'):
+                    ui.icon('filter_alt').classes('text-slate-400 text-sm')
+                    ui.label('Configuración de salida').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Controla qué resultados se incluyen en el output del paso')
+
+                with ui.row().classes('w-full gap-2'):
+                    # Filtro de resultados (opciones correctas del backend)
+                    current_filter = params.get('output_filter', 'all')
+                    filter_options = {
+                        'all': 'Todos',
+                        'successful': 'Solo exitosos',
+                        'first_n': 'Primeros N'
+                    }
+
+                    def on_filter_change(e, i=idx):
+                        # Convertir label a value
+                        label_to_value = {v: k for k, v in filter_options.items()}
+                        value = label_to_value.get(e.value, 'all')
+                        update_step_param(i, 'output_filter', value)
+                        # Si cambia a first_n y no hay límite, establecer uno por defecto
+                        if value == 'first_n' and not params.get('output_limit'):
+                            update_step_param(i, 'output_limit', 10)
+                        refresh_builder()
+
+                    ui.select(
+                        label='Filtro',
+                        options=list(filter_options.values()),
+                        value=filter_options.get(current_filter, 'Todos'),
+                        on_change=on_filter_change
+                    ).props('outlined dark dense').classes('w-40 input-subtle').tooltip('Todos: incluye todas las coincidencias\nSolo exitosos: solo cuando todas las reglas coinciden\nPrimeros N: limita a las primeras N coincidencias')
+
+                    # Campo de límite (solo visible si filter = first_n)
+                    if current_filter == 'first_n':
+                        ui.number(
+                            label='Límite',
+                            value=params.get('output_limit', 10),
+                            min=1,
+                            max=1000,
+                            on_change=lambda e, i=idx: update_step_param(i, 'output_limit', int(e.value) if e.value else 10)
+                        ).props('outlined dark dense').classes('w-24 input-subtle').tooltip('Número máximo de coincidencias a incluir')
 
     def render_verify_config(idx: int, step: Dict):
         """Renderiza configuración de paso verify."""
         params = step.get('parameters', {})
         methods = params.get('methods', [])
 
-        with ui.column().classes('w-full gap-4'):
-            ui.label('Métodos de verificación').classes('text-sm text-slate-400')
-            ui.label('Define criterios para validar los datos extraídos').classes('text-xs text-slate-400 -mt-2')
+        # Inicializar referencias para este paso
+        if idx not in field_refs:
+            field_refs[idx] = {}
+        field_refs[idx]['methods'] = {}
 
-            if not methods:
-                with ui.row().classes('items-center gap-2 p-3 bg-slate-900/30 rounded'):
-                    ui.icon('info', size='xs').classes('text-slate-400')
-                    ui.label('No hay métodos. Añade uno para verificar resultados.').classes('text-slate-400 text-sm')
+        def get_step_output_variables(step_data: Dict, step_idx: int) -> List[str]:
+            """Retorna lista de nombres de variables que produce un paso."""
+            step_type = step_data.get('type', 'generate')
+            if step_type == 'generate':
+                vars_list = [f'output_{step_idx + 1}']
+                # Incluir variables de parse_rules integradas
+                parse_rules = step_data.get('parameters', {}).get('parse_rules', [])
+                for rule in parse_rules:
+                    if rule.get('name'):
+                        vars_list.append(rule['name'])
+                return vars_list
+            elif step_type == 'parse':
+                rules = step_data.get('parameters', {}).get('rules', [])
+                return [rule['name'] for rule in rules if rule.get('name')]
+            elif step_type == 'verify':
+                return ['status', 'details']
+            return []
 
-            for m_idx, method in enumerate(methods):
-                with ui.card().classes('w-full bg-slate-900/30 p-3'):
-                    # Primera fila: Nombre, Modo, Eliminar
-                    with ui.row().classes('w-full justify-between items-center'):
-                        with ui.row().classes('gap-2 items-end'):
-                            ui.input(
-                                label='Nombre',
-                                value=method.get('name', ''),
-                                placeholder='ej: validar_contenido',
-                                on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'name', e.value)
-                            ).props('outlined dark dense').classes('w-40').tooltip('Identificador del método')
+        # Obtener variables disponibles (entrada + pasos referenciados)
+        def get_available_variables() -> List[Dict[str, str]]:
+            """Retorna lista de variables disponibles (entrada + pasos referenciados)."""
+            variables = []
 
-                            ui.select(
-                                label='Modo',
-                                options=['cumulative', 'eliminatory'],
-                                value=method.get('mode', 'cumulative'),
-                                on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'mode', e.value)
-                            ).props('outlined dark dense').classes('w-32').tooltip('cumulative: suma votos positivos\neliminatory: un No elimina')
+            # Variables de entrada (si están habilitadas)
+            if local_state['input_vars_enabled'] and local_state['input_fields']:
+                for field in local_state['input_fields']:
+                    variables.append({'name': field, 'step': -1, 'type': 'input'})
 
-                        ui.button(icon='delete', on_click=lambda si=idx, mi=m_idx: remove_verify_method(si, mi)).props('flat round size=sm color=red').tooltip('Eliminar método')
+            # Variables de pasos referenciados
+            current_refs = step.get('reference_step_numbers', [])
+            for ref_idx in current_refs:
+                if 0 <= ref_idx < len(local_state['steps']):
+                    ref_step = local_state['steps'][ref_idx]
+                    ref_type = ref_step.get('type', 'generate')
+                    if ref_type == 'generate':
+                        variables.append({'name': f'output_{ref_idx + 1}', 'step': ref_idx, 'type': 'generate'})
+                        # Incluir variables de parse_rules integradas
+                        parse_rules = ref_step.get('parameters', {}).get('parse_rules', [])
+                        for rule in parse_rules:
+                            if rule.get('name'):
+                                variables.append({'name': rule['name'], 'step': ref_idx, 'type': 'parse'})
+                    elif ref_type == 'parse':
+                        rules = ref_step.get('parameters', {}).get('rules', [])
+                        for rule in rules:
+                            if rule.get('name'):
+                                variables.append({'name': rule['name'], 'step': ref_idx, 'type': 'parse'})
+                    elif ref_type == 'verify':
+                        variables.append({'name': 'status', 'step': ref_idx, 'type': 'verify'})
+                        variables.append({'name': 'details', 'step': ref_idx, 'type': 'verify'})
+            return variables
 
-                    # System Prompt
-                    ui.label('System Prompt').classes('text-xs text-slate-400 mt-2')
-                    ui.textarea(
-                        value=method.get('system_prompt', 'Responde Yes o No.'),
-                        placeholder='Instrucciones para el verificador...',
-                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'system_prompt', e.value)
-                    ).props('outlined dark dense rows=2 autogrow').classes('w-full input-subtle').tooltip('Instrucciones del sistema para la verificación')
+        def render_variable_chips(textarea_element, field: str, method_idx: int):
+            """Renderiza los chips de variables clickables que insertan en la posición del cursor."""
+            variables = get_available_variables()
+            if not variables:
+                return
 
-                    # User Prompt
-                    ui.label('User Prompt').classes('text-xs text-slate-400 mt-2')
-                    ui.textarea(
-                        value=method.get('user_prompt', ''),
-                        placeholder='Pregunta de verificación. Usa {variable} para datos.',
-                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'user_prompt', e.value)
-                    ).props('outlined dark dense rows=2 autogrow').classes('w-full input-subtle').tooltip('Pregunta para verificar el contenido')
+            with ui.row().classes('w-full flex-wrap items-center gap-1.5 px-2 py-1.5 bg-slate-800/40 rounded-b border border-t-0 border-slate-600/50'):
+                ui.icon('add_link', size='xs').classes('text-slate-400')
+                ui.label('Insertar:').classes('text-xs text-slate-400 mr-1')
 
-                    # Valid Responses
-                    ui.label('Respuestas válidas').classes('text-xs text-slate-400 mt-2')
-                    valid_responses = method.get('valid_responses', ['Yes', 'yes', 'Si', 'si'])
-                    ui.input(
-                        value=', '.join(valid_responses) if isinstance(valid_responses, list) else str(valid_responses),
-                        placeholder='Yes, yes, Si, si',
-                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'valid_responses', [r.strip() for r in e.value.split(',')] if e.value else [])
-                    ).props('outlined dark dense').classes('w-full').tooltip('Respuestas que cuentan como verificación positiva (separadas por coma)')
+                for var in variables:
+                    v = var['name']
+                    var_type = var['type']
+                    var_step = var['step']
+                    var_text = f'{{{v}}}'
 
-                    # Parámetros numéricos
-                    with ui.row().classes('gap-3 mt-3 flex-wrap'):
-                        ui.number(
-                            label='Secuencias',
-                            value=method.get('num_sequences', 3),
-                            min=1, max=10,
-                            on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'num_sequences', int(e.value) if e.value else 3)
-                        ).props('outlined dark dense').classes('w-24').tooltip('Número de verificaciones a realizar')
+                    type_names = {'generate': 'Generado', 'parse': 'Detectado', 'verify': 'Verificado', 'input': 'Entrada'}
 
-                        ui.number(
-                            label='Requeridos',
-                            value=method.get('required_matches', 2),
-                            min=1, max=10,
-                            on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'required_matches', int(e.value) if e.value else 2)
-                        ).props('outlined dark dense').classes('w-24').tooltip('Mínimo de respuestas positivas necesarias')
+                    # Nombre descriptivo según tipo (igual que en generate)
+                    if var_type == 'input':
+                        display_name = f'{{{v}}}'
+                        tooltip_text = f'Variable de entrada. Click para insertar {{{v}}}'
+                    else:
+                        step_num = var_step + 1
+                        display_name = f'Paso {step_num}: {{{v}}}'
+                        tooltip_text = f'{type_names.get(var_type, "Output")} del paso {step_num}. Click para insertar la variable'
 
-                        ui.number(
-                            label='Max Tokens',
-                            value=method.get('max_tokens', 5),
-                            min=1, max=50,
-                            on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'max_tokens', int(e.value) if e.value else 5)
-                        ).props('outlined dark dense').classes('w-24').tooltip('Tokens máximos en respuesta')
+                    async def insert_var_at_cursor(vt=var_text, fld=field, mi=method_idx):
+                        js_code = f'''
+                        (() => {{
+                            const textarea = document.getElementById('{textarea_element.id}').querySelector('textarea, input');
+                            if (!textarea) return null;
+                            const start = textarea.selectionStart || 0;
+                            const end = textarea.selectionEnd || 0;
+                            const text = textarea.value || '';
+                            const varText = '{vt}';
+                            const newText = text.substring(0, start) + varText + text.substring(end);
+                            textarea.value = newText;
+                            const newCursorPos = start + varText.length;
+                            textarea.selectionStart = textarea.selectionEnd = newCursorPos;
+                            textarea.focus();
+                            textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            return newText;
+                        }})()
+                        '''
+                        result = await ui.run_javascript(js_code)
+                        if result is not None:
+                            update_verify_method(idx, mi, fld, result)
 
-                        ui.number(
-                            label='Temperatura',
-                            value=method.get('temperature', 0.8),
-                            min=0, max=2, step=0.1,
-                            on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'temperature', float(e.value) if e.value else 0.8)
-                        ).props('outlined dark dense').classes('w-24').tooltip('Variabilidad en respuestas')
+                    with ui.button(on_click=insert_var_at_cursor).props('flat dense no-caps color=none').classes(
+                        'px-2 py-0.5 min-h-0 hover:bg-slate-700/50 transition-all'
+                    ):
+                        ui.label(display_name).classes('font-mono text-xs text-slate-200 normal-case')
+                        ui.tooltip(tooltip_text).classes('bg-slate-800 text-slate-200')
 
-            ui.button('+ Añadir método', icon='add', on_click=lambda i=idx: add_verify_method(i)).props('flat size=sm').classes('text-emerald-400')
+        with ui.column().classes('w-full gap-3'):
+            # === SECCIÓN: REFERENCIAS A PASOS ANTERIORES ===
+            if idx > 0:
+                with ui.column().classes('w-full gap-2'):
+                    with ui.row().classes('items-center gap-1.5'):
+                        ui.icon('data_object').classes('text-slate-400 text-sm -mt-0.5')
+                        ui.label('Referenciar outputs de pasos anteriores').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Selecciona pasos anteriores para usar sus outputs como variables en tus prompts.')
 
-            # Configuración global de verificación
-            ui.label('Configuración global').classes('text-sm text-slate-400 mt-2')
-            with ui.row().classes('gap-4'):
-                ui.number(
-                    label='Mín. métodos para confirmar',
-                    value=params.get('required_for_confirmed', 1),
-                    min=0, max=10,
-                    on_change=lambda e, i=idx: update_step_param(i, 'required_for_confirmed', int(e.value) if e.value else 1)
-                ).props('outlined dark dense').classes('w-48').tooltip('Métodos que deben pasar para confirmar')
+                    current_refs = step.get('reference_step_numbers', [])
+                    with ui.column().classes('w-full gap-0'):
+                        for prev_idx in range(idx):
+                            prev_step = local_state['steps'][prev_idx]
+                            prev_type = prev_step.get('type', 'generate')
+                            type_names = {'generate': 'Generar', 'parse': '', 'verify': 'Verificar'}
+                            is_checked = prev_idx in current_refs
 
-                ui.number(
-                    label='Mín. métodos para revisión',
-                    value=params.get('required_for_review', 0),
-                    min=0, max=10,
-                    on_change=lambda e, i=idx: update_step_param(i, 'required_for_review', int(e.value) if e.value else 0)
-                ).props('outlined dark dense').classes('w-48').tooltip('Métodos que deben pasar para marcar como revisar')
+                            # Obtener variables que produce este paso
+                            step_vars = get_step_output_variables(prev_step, prev_idx)
+                            vars_display = ', '.join(f'{{{v}}}' for v in step_vars) if step_vars else '(sin variables establecidas)'
+
+                            with ui.row().classes('w-full items-center gap-0.5 py-1 ml-2'):
+                                cb = ui.checkbox(
+                                    value=is_checked,
+                                    on_change=lambda e, i=idx, r=prev_idx: toggle_reference_step(i, r, e.value)
+                                ).props('dense size=sm')
+                                ui.label(f'Paso {prev_idx + 1}:').classes('text-sm text-slate-400 cursor-pointer select-none ml-0.5').on('click', lambda _, c=cb: c.set_value(not c.value))
+                                ui.label(type_names.get(prev_type, prev_type)).classes('text-sm text-slate-400 cursor-pointer select-none').on('click', lambda _, c=cb: c.set_value(not c.value))
+                                ui.label('→').classes('text-slate-500 text-xs mx-0.5')
+                                vars_classes = 'text-xs text-slate-500 font-mono' if step_vars else 'text-xs text-slate-500 italic'
+                                ui.label(vars_display).classes(vars_classes)
+
+                    ui.element('div').classes('w-full h-px bg-slate-700/50 my-1')
+
+            # === SECCIÓN: MÉTODOS DE VERIFICACIÓN ===
+            with ui.column().classes('w-full gap-2'):
+                for m_idx, method in enumerate(methods):
+                    # Inicializar referencias para este método
+                    field_refs[idx]['methods'][m_idx] = {}
+
+                    # Separador entre métodos (no antes del primero)
+                    if m_idx > 0:
+                        ui.element('div').classes('w-full h-px bg-slate-700/50 my-2')
+
+                    # Layout: número (con X al hover) | campos
+                    with ui.row().classes('w-full gap-3'):
+                        # Número a la izquierda (se convierte en X al hover), centrado verticalmente
+                        with ui.element('div').classes('w-5 flex items-center justify-center relative group/method self-center'):
+                            ui.label(f'#{m_idx + 1}').classes('text-xs text-slate-500 group-hover/method:opacity-0 transition-opacity')
+                            ui.button(
+                                icon='close',
+                                on_click=lambda si=idx, mi=m_idx: remove_verify_method(si, mi)
+                            ).props('flat round size=xs color=none').classes(
+                                '!text-slate-500 hover:!text-red-400 absolute opacity-0 group-hover/method:opacity-100 transition-opacity'
+                            )
+
+                        # Campos
+                        with ui.column().classes('flex-1 gap-2'):
+                            # Fila superior: Nombre + Consenso
+                            with ui.row().classes('w-full gap-6 items-end'):
+                                # Nombre con label arriba
+                                with ui.column().classes('gap-0'):
+                                    ui.label('Nombre del método').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Identificador único del método')
+
+                                    name_input = ui.input(
+                                        value=method.get('name', ''),
+                                        placeholder='metodo_1',
+                                    ).props('outlined dark dense color=purple').classes('w-40 input-subtle mt-1')
+                                    name_input.on(
+                                        'blur',
+                                        lambda e, si=idx, mi=m_idx: validate_and_update_method_name(si, mi, e.sender.value, e.sender)
+                                    )
+                                    field_refs[idx]['methods'][m_idx]['name'] = name_input
+
+                                # Consenso con label arriba
+                                with ui.column().classes('gap-0'):
+                                    ui.label('Consenso').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Sistema de votación.\n Se dan N respuestas, de las cuales se requieren M respuestas válidas para pasar el filtro de éste método.')
+
+                                    # Referencias para validación cruzada
+                                    current_num_seq = method.get('num_sequences', 3)
+                                    current_req = method.get('required_matches', 2)
+
+                                    def on_required_change(e, si=idx, mi=m_idx):
+                                        val = int(e.value) if e.value else 1
+                                        num_seq = local_state['steps'][si]['parameters']['methods'][mi].get('num_sequences', 3)
+                                        # Cap required at num_sequences
+                                        val = min(val, num_seq)
+                                        update_verify_method(si, mi, 'required_matches', val)
+                                        if e.value and int(e.value) > num_seq:
+                                            e.sender.value = val
+
+                                    def on_num_seq_change(e, si=idx, mi=m_idx):
+                                        val = int(e.value) if e.value else 1
+                                        update_verify_method(si, mi, 'num_sequences', val)
+                                        # Reduce required_matches if it exceeds new num_sequences
+                                        req = local_state['steps'][si]['parameters']['methods'][mi].get('required_matches', 2)
+                                        if req > val:
+                                            update_verify_method(si, mi, 'required_matches', val)
+                                            refresh_builder()
+
+                                    with ui.row().classes('items-center gap-1.5 mt-1'):
+                                        ui.number(
+                                            value=min(current_req, current_num_seq),
+                                            min=1, max=current_num_seq,
+                                            on_change=on_required_change
+                                        ).props('outlined dark dense color=purple input-class="text-center !py-0.5"').classes('w-14').tooltip('Número de respuestas válidas para pasar el filtro')
+                                        ui.label('de').classes('text-xs text-slate-400')
+                                        ui.number(
+                                            value=current_num_seq,
+                                            min=1, max=10,
+                                            on_change=on_num_seq_change
+                                        ).props('outlined dark dense color=purple input-class="text-center !py-0.5"').classes('w-14').tooltip('Número de respuestas a generar en total')
+
+                                # Temperatura
+                                with ui.column().classes('gap-0'):
+                                    ui.label('Temp.').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Controla la variabilidad.\n0 = Consistente\n2 = Variado')
+                                    ui.number(
+                                        value=method.get('temperature', 0.8),
+                                        min=0, max=2, step=0.1,
+                                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'temperature', float(e.value) if e.value is not None else 0.8)
+                                    ).props('outlined dark dense color=purple input-class="text-center !py-0.5"').classes('w-16 mt-1')
+
+                            # System Prompt con chips de variables
+                            has_vars = bool(get_available_variables())
+                            with ui.column().classes('w-full gap-0 mt-2'):
+                                ui.label('System Prompt').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Define el rol del verificador')
+                                with ui.column().classes('w-full gap-0 mt-1'):
+                                    system_textarea = ui.textarea(
+                                        value=method.get('system_prompt', ''),
+                                        placeholder='Responde únicamente Sí o No.',
+                                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'system_prompt', e.value)
+                                    ).props('outlined dark dense rows=1 autogrow').classes('w-full input-subtle' + (' rounded-b-none' if has_vars else ''))
+                                    field_refs[idx]['methods'][m_idx]['system_prompt'] = system_textarea
+                                    render_variable_chips(system_textarea, 'system_prompt', m_idx)
+
+                            # User Prompt con chips de variables
+                            with ui.column().classes('w-full gap-0 mt-2'):
+                                ui.label('User Prompt').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Pregunta para el verificador. Usa {variable} para insertar datos.')
+                                with ui.column().classes('w-full gap-0 mt-1'):
+                                    user_textarea = ui.textarea(
+                                        value=method.get('user_prompt', ''),
+                                        placeholder='¿El texto {texto} es correcto?',
+                                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'user_prompt', e.value)
+                                    ).props('outlined dark dense rows=1 autogrow').classes('w-full input-subtle' + (' rounded-b-none' if has_vars else ''))
+                                    field_refs[idx]['methods'][m_idx]['user_prompt'] = user_textarea
+                                    render_variable_chips(user_textarea, 'user_prompt', m_idx)
+
+                            # Respuestas válidas
+                            valid_responses = method.get('valid_responses', [])
+                            if not valid_responses:
+                                valid_responses = ['']  # Al menos un input vacío
+
+                            with ui.column().classes('w-full gap-0 mt-2'):
+                                ui.label('Respuestas válidas').classes('text-xs font-medium text-slate-300 uppercase cursor-help').tooltip('Respuestas válidas para el filtro.\nAñade tantas como desees.\nLa respuesta del modelo debe ser exactamente igual a lo especificado para ser considerada válida.')
+
+                                with ui.row().classes('items-center gap-1 mt-1 flex-wrap'):
+                                    for r_idx, response in enumerate(valid_responses):
+                                        def on_response_change(e, si=idx, mi=m_idx, ri=r_idx):
+                                            responses = local_state['steps'][si]['parameters']['methods'][mi].get('valid_responses', [''])
+                                            if ri < len(responses):
+                                                responses[ri] = e.value
+                                                update_verify_method(si, mi, 'valid_responses', responses)
+
+                                        def on_remove_response(si=idx, mi=m_idx, ri=r_idx):
+                                            responses = local_state['steps'][si]['parameters']['methods'][mi].get('valid_responses', [''])
+                                            if len(responses) > 1 and ri < len(responses):
+                                                responses.pop(ri)
+                                                update_verify_method(si, mi, 'valid_responses', responses)
+                                                refresh_builder()
+
+                                        with ui.input(
+                                            value=response,
+                                            placeholder='Sí',
+                                            on_change=on_response_change
+                                        ).props('outlined dark dense color=purple').classes('w-24 input-subtle') as inp:
+                                            if len(valid_responses) > 1:
+                                                with inp.add_slot('append'):
+                                                    ui.button(icon='close', on_click=on_remove_response).props('flat dense round size=xs color=none').classes('!text-slate-500 hover:!text-red-400')
+
+                                    def add_valid_response(si=idx, mi=m_idx):
+                                        responses = local_state['steps'][si]['parameters']['methods'][mi].get('valid_responses', [''])
+                                        responses.append('')
+                                        update_verify_method(si, mi, 'valid_responses', responses)
+                                        refresh_builder()
+
+                                    ui.button(icon='add', on_click=add_valid_response).props('flat dense round size=sm color=purple').classes('ml-1')
+
+                                    # Checkbox ignorar mayúsculas
+                                    ui.element('div').classes('w-px h-4 bg-slate-600/50 mx-2')
+                                    ignore_case = method.get('ignore_case', True)
+                                    ui.checkbox(
+                                        'Ignorar mayúsculas',
+                                        value=ignore_case,
+                                        on_change=lambda e, si=idx, mi=m_idx: update_verify_method(si, mi, 'ignore_case', e.value)
+                                    ).props('dense size=sm').classes('text-xs text-slate-400')
+
+                            # Modelo específico para este método (opcional)
+                            method_llm = method.get('llm_config')
+                            with ui.row().classes('w-full items-center gap-2 mt-2'):
+                                if method_llm:
+                                    # Mostrar modelo seleccionado con opción de quitar
+                                    ui.icon('smart_toy', size='xs').classes('text-purple-400')
+                                    ui.label(method_llm if len(method_llm) < 40 else f'...{method_llm[-37:]}').classes('text-xs text-slate-300 font-mono truncate flex-1')
+                                    ui.button(
+                                        icon='close',
+                                        on_click=lambda si=idx, mi=m_idx: (update_verify_method(si, mi, 'llm_config', None), refresh_builder())
+                                    ).props('flat round size=xs color=none').classes('!text-slate-500 hover:!text-red-400')
+                                else:
+                                    # Input para añadir modelo específico
+                                    def on_method_llm_set(e, si=idx, mi=m_idx):
+                                        if e.value and e.value.strip():
+                                            update_verify_method(si, mi, 'llm_config', e.value.strip())
+                                            refresh_builder()
+
+                                    ui.input(
+                                        placeholder='Modelo específico (opcional)',
+                                        on_change=on_method_llm_set
+                                    ).props('outlined dark dense color=purple').classes('flex-1 input-subtle text-xs').tooltip('Ruta al modelo local o ID de HuggingFace.\nSi se deja vacío, usa el modelo del paso.')
+
+                # Fila con botón añadir
+                with ui.row().classes('w-full items-center justify-between'):
+                    # Botón añadir método (icono + texto clickable)
+                    ui.button('MÉTODO', icon='add', on_click=lambda i=idx: add_verify_method(i)).props('flat dense size=md color=none').classes('!text-purple-400 hover:!text-purple-300 !px-1 uppercase')
+
 
     def update_parse_rule(step_idx: int, rule_idx: int, field: str, value):
         """Actualiza un campo de una regla de parsing."""
@@ -2813,12 +3237,109 @@ def pipeline_page():
                 rules.pop(rule_idx)
                 refresh_builder()
 
+    # === Funciones para parse_rules integrado en generate ===
+    def add_generate_parse_rule(step_idx: int):
+        """Añade una regla de parsing a un paso generate."""
+        if 0 <= step_idx < len(local_state['steps']):
+            step = local_state['steps'][step_idx]
+            if 'parameters' not in step:
+                step['parameters'] = {}
+            if 'parse_rules' not in step['parameters']:
+                step['parameters']['parse_rules'] = []
+            step['parameters']['parse_rules'].append({
+                'name': '',
+                'mode': 'KEYWORD',
+                'pattern': '',
+                'secondary_pattern': '',
+                'fallback_value': ''
+            })
+            refresh_builder()
+
+    def update_generate_parse_rule(step_idx: int, rule_idx: int, field: str, value):
+        """Actualiza un campo de una regla de parsing en generate."""
+        if 0 <= step_idx < len(local_state['steps']):
+            rules = local_state['steps'][step_idx]['parameters'].get('parse_rules', [])
+            if 0 <= rule_idx < len(rules):
+                rules[rule_idx][field] = value
+                # Refrescar UI cuando cambia el modo para mostrar/ocultar campos
+                if field == 'mode':
+                    refresh_builder()
+
+    def remove_generate_parse_rule(step_idx: int, rule_idx: int):
+        """Elimina una regla de parsing de un paso generate."""
+        if 0 <= step_idx < len(local_state['steps']):
+            rules = local_state['steps'][step_idx]['parameters'].get('parse_rules', [])
+            if 0 <= rule_idx < len(rules):
+                rules.pop(rule_idx)
+                refresh_builder()
+
+    def toggle_generate_parsing(step_idx: int, enabled: bool):
+        """Activa/desactiva el parsing en un paso generate."""
+        if 0 <= step_idx < len(local_state['steps']):
+            step = local_state['steps'][step_idx]
+            if enabled:
+                # Crear regla inicial si no existe o está vacía
+                if not step['parameters'].get('parse_rules'):
+                    step['parameters']['parse_rules'] = [{
+                        'name': '',
+                        'mode': 'KEYWORD',
+                        'pattern': '',
+                        'secondary_pattern': '',
+                        'fallback_value': ''
+                    }]
+            else:
+                step['parameters'].pop('parse_rules', None)
+            refresh_builder()
+
     def update_verify_method(step_idx: int, method_idx: int, field: str, value):
         """Actualiza un campo de un método de verificación."""
         if 0 <= step_idx < len(local_state['steps']):
             methods = local_state['steps'][step_idx]['parameters'].get('methods', [])
             if 0 <= method_idx < len(methods):
                 methods[method_idx][field] = value
+
+    async def validate_and_update_method_name(step_idx: int, method_idx: int, new_value: str, input_element):
+        """Valida el nombre de método y muestra feedback visual si hay error."""
+        import asyncio
+        new_name = new_value.strip()
+
+        if 0 > step_idx or step_idx >= len(local_state['steps']):
+            return
+
+        methods = local_state['steps'][step_idx]['parameters'].get('methods', [])
+        if 0 > method_idx or method_idx >= len(methods):
+            return
+
+        old_name = methods[method_idx].get('name', '')
+
+        # Si está vacío, restaurar nombre actual
+        if not new_name:
+            input_element.value = old_name
+            return
+
+        # Si no hay cambio, no hacer nada
+        if new_name == old_name:
+            return
+
+        # Verificar si ya existe otro método con ese nombre
+        existing_names = {
+            m.get('name', '') for i, m in enumerate(methods) if i != method_idx
+        }
+        if new_name in existing_names:
+            # Mostrar error visual: borde rojo + shake
+            input_element.classes(add='input-error shake-error')
+            ui.notify(f'Ya existe un método "{new_name}"', type='negative')
+
+            # Restaurar nombre actual
+            input_element.value = old_name
+
+            # Quitar clases de error después de la animación
+            await asyncio.sleep(0.5)
+            input_element.classes(remove='input-error shake-error')
+            return
+
+        # Nombre válido, actualizar
+        methods[method_idx]['name'] = new_name
 
     def remove_verify_method(step_idx: int, method_idx: int):
         """Elimina un método de verificación."""
@@ -2878,12 +3399,7 @@ def pipeline_page():
             ).props('dense color=purple').classes('input-vars-toggle shrink-0')
 
             with ui.column().classes('gap-0 flex-1'):
-                with ui.row().classes('items-center gap-1'):
-                    ui.label('Utilizar Variables de Entrada').classes('text-sm font-medium text-slate-200')
-                    with ui.icon('help_outline').classes('text-slate-400 cursor-help text-[12px]'):
-                        ui.tooltip(
-                            'Define variables con múltiples valores. El pipeline se ejecutará una vez por cada fila.'
-                        ).classes('text-xs')
+                ui.label('Usar Variables de Entrada').classes('text-sm font-medium text-slate-200')
 
                 ui.label('Añade diferentes variables y ejecuta el pipeline para cada uno de sus valores').classes('text-xs text-slate-400')
 
@@ -3046,8 +3562,8 @@ def pipeline_page():
                     with ui.element('div').classes('bg-slate-800/60 border-b border-r border-slate-700/50 px-1 py-1'):
                         with ui.row().classes('items-center gap-1 flex-nowrap w-full'):
                             ui.input(
-                                value='' if is_placeholder else field,
-                                placeholder='nombre_var' if is_placeholder else 'nombre'
+                                value=field,
+                                placeholder='nombre_var'
                             ).props('outlined dense dark').classes(
                                 'text-sm input-subtle shrink-0'
                             ).style('min-height: 18px; width: 105px').on(
@@ -3056,7 +3572,7 @@ def pipeline_page():
                                 'keydown.enter', lambda e: e.sender.run_method('blur')
                             )
                             ui.label('→').classes('text-slate-500 text-xs shrink-0')
-                            ui.label('{sin nombre}' if is_placeholder else f'{{{field}}}').classes('text-slate-400 font-mono text-xs shrink-0 whitespace-nowrap')
+                            ui.label(f'{{{field}}}').classes('text-slate-400 font-mono text-xs shrink-0 whitespace-nowrap')
                             ui.element('div').classes('flex-1')  # Spacer
                             ui.button(
                                 icon='close',
@@ -3072,7 +3588,7 @@ def pipeline_page():
                         'hover:bg-purple-500/20 hover:border-purple-500/50 transition-all flex items-center'
                     ):
                         ui.icon('add', size='xs').classes('text-purple-400 mr-1.5')
-                        ui.label('Variable').classes('text-xs text-slate-300 leading-none')
+                        ui.label('VARIABLE').classes('text-xs text-slate-300 leading-none uppercase')
 
                 # ─────────────────────────────────────────────────────────────
                 # FILAS DE DATOS
@@ -3127,7 +3643,7 @@ def pipeline_page():
                             'hover:bg-purple-500/20 hover:border-purple-500/50 transition-all flex items-center'
                         ):
                             ui.icon('add', size='xs').classes('text-purple-400 mr-1.5')
-                            ui.label('Valor').classes('text-xs text-slate-300 leading-none')
+                            ui.label('VALOR').classes('text-xs text-slate-300 leading-none uppercase')
 
     def build_steps_from_config() -> List[PipelineStep]:
         """Construye los PipelineStep desde la configuración local."""
@@ -3173,7 +3689,9 @@ def pipeline_page():
                         valid_responses=m.get('valid_responses', ['Yes', 'yes']),
                         required_matches=m.get('required_matches', 2),
                         max_tokens=m.get('max_tokens', 5),
-                        temperature=m.get('temperature', 0.8)
+                        temperature=m.get('temperature', 0.8),
+                        ignore_case=m.get('ignore_case', True),
+                        llm_config=m.get('llm_config')
                     ))
                 step_params = VerifyRequest(
                     methods=methods,
@@ -3192,10 +3710,117 @@ def pipeline_page():
 
         return built_steps
 
+    def validate_pipeline_fields():
+        """Valida todos los campos obligatorios del pipeline.
+
+        Returns:
+            tuple: (is_valid, error_message, field_ref, step_idx)
+        """
+        for step_idx, step in enumerate(local_state['steps']):
+            stype = step.get('type')
+            params = step.get('parameters', {})
+
+            if stype == 'generate':
+                # Validar system_prompt
+                if not params.get('system_prompt', '').strip():
+                    field_ref = field_refs.get(step_idx, {}).get('system_prompt')
+                    return (False, f'Paso {step_idx + 1}: System Prompt es obligatorio', field_ref, step_idx)
+                # Validar user_prompt
+                if not params.get('user_prompt', '').strip():
+                    field_ref = field_refs.get(step_idx, {}).get('user_prompt')
+                    return (False, f'Paso {step_idx + 1}: User Prompt es obligatorio', field_ref, step_idx)
+
+            elif stype == 'verify':
+                methods = params.get('methods', [])
+                if not methods:
+                    return (False, f'Paso {step_idx + 1}: Añade al menos un método de verificación', None, step_idx)
+
+                for m_idx, method in enumerate(methods):
+                    # Validar name
+                    if not method.get('name', '').strip():
+                        field_ref = field_refs.get(step_idx, {}).get('methods', {}).get(m_idx, {}).get('name')
+                        return (False, f'Paso {step_idx + 1}, Método {m_idx + 1}: Nombre es obligatorio', field_ref, step_idx)
+                    # Validar system_prompt
+                    if not method.get('system_prompt', '').strip():
+                        field_ref = field_refs.get(step_idx, {}).get('methods', {}).get(m_idx, {}).get('system_prompt')
+                        return (False, f'Paso {step_idx + 1}, Método {m_idx + 1}: System Prompt es obligatorio', field_ref, step_idx)
+                    # Validar user_prompt
+                    if not method.get('user_prompt', '').strip():
+                        field_ref = field_refs.get(step_idx, {}).get('methods', {}).get(m_idx, {}).get('user_prompt')
+                        return (False, f'Paso {step_idx + 1}, Método {m_idx + 1}: User Prompt es obligatorio', field_ref, step_idx)
+                    # Validar valid_responses
+                    valid_responses = method.get('valid_responses', [])
+                    if not valid_responses or (isinstance(valid_responses, list) and len(valid_responses) == 0):
+                        return (False, f'Paso {step_idx + 1}, Método {m_idx + 1}: Respuestas válidas es obligatorio', None, step_idx)
+
+            elif stype == 'parse':
+                rules = params.get('rules', [])
+                if not rules:
+                    return (False, f'Paso {step_idx + 1}: Añade al menos una regla de parseo', None, step_idx)
+
+                for r_idx, rule in enumerate(rules):
+                    # Validar name
+                    if not rule.get('name', '').strip():
+                        return (False, f'Paso {step_idx + 1}, Regla {r_idx + 1}: Nombre es obligatorio', None, step_idx)
+                    # Validar pattern
+                    if not rule.get('pattern', '').strip():
+                        return (False, f'Paso {step_idx + 1}, Regla {r_idx + 1}: Patrón es obligatorio', None, step_idx)
+
+        return (True, None, None, None)
+
+    async def shake_and_focus_field(field_ref, step_idx: int):
+        """Aplica animación shake y focus a un campo."""
+        # Expandir el paso si está colapsado
+        if local_state.get('expanded_step') != step_idx:
+            local_state['expanded_step'] = step_idx
+            refresh_builder()
+            await asyncio.sleep(0.1)  # Esperar a que se renderice
+
+        if field_ref:
+            # Shake animation
+            field_ref.classes(add='shake-error input-error')
+            field_ref.run_method('focus')
+
+            # Scroll al campo
+            field_ref.run_method('scrollIntoView', {'behavior': 'smooth', 'block': 'center'})
+
+            # Quitar clases después de la animación
+            async def remove_error_classes():
+                await asyncio.sleep(0.5)
+                if field_ref:
+                    field_ref.classes(remove='shake-error input-error')
+            asyncio.create_task(remove_error_classes())
+
     async def run_pipeline():
         """Ejecuta el pipeline."""
         if not local_state['steps']:
             ui.notify('Configura al menos un paso', type='warning')
+            return
+
+        # Validar que hay un modelo seleccionado
+        if not state.model:
+            ui.notify('Selecciona un modelo de lenguaje', type='warning')
+            # Scroll al selector de modelo
+            ui.run_javascript('document.getElementById("model-selector-section")?.scrollIntoView({behavior: "smooth", block: "center"})')
+            # Shake animation
+            if model_selector_ref['container']:
+                model_selector_ref['container'].classes(add='shake-error')
+                # Quitar clase después de la animación
+                async def remove_shake():
+                    await asyncio.sleep(0.5)
+                    if model_selector_ref['container']:
+                        model_selector_ref['container'].classes(remove='shake-error')
+                asyncio.create_task(remove_shake())
+            # Abrir el selector en modo edición
+            if model_selector_ref['switch_to_edit']:
+                await model_selector_ref['switch_to_edit']()
+            return
+
+        # Validar campos obligatorios
+        is_valid, error_msg, field_ref, step_idx = validate_pipeline_fields()
+        if not is_valid:
+            ui.notify(error_msg, type='warning')
+            await shake_and_focus_field(field_ref, step_idx)
             return
 
         # Determinar modo de ejecución:
@@ -3205,11 +3830,83 @@ def pipeline_page():
         fields = local_state['input_fields']
         has_data_entries = bool(input_values) and bool(fields) and any(len(v) > 0 for v in input_values.values())
 
-        run_btn.disable()
-        loading_box.set_visibility(True)
+        # === TRANSICIÓN DE ESTADO: ready → loading ===
+        local_state['ready_state'].set_visibility(False)
+        local_state['loading_state'].set_visibility(True)
+        local_state['results_state'].set_visibility(False)
         results_container.clear()
 
+        # Resetear barra de progreso
+        local_state['progress_bar_fill'].style('width: 0%')
+        local_state['progress_text'].set_text('')
+
         t0 = datetime.now()
+
+        # === SISTEMA DE CALLBACKS DE PROGRESO ===
+        # Cola thread-safe para comunicar actualizaciones desde el backend
+        progress_queue = queue.Queue()
+        stop_monitoring = threading.Event()
+
+        def progress_callback(update: ProgressUpdate) -> None:
+            """Callback que recibe actualizaciones de progreso del backend."""
+            progress_queue.put(update)
+
+        async def monitor_progress():
+            """Tarea async que monitorea la cola y actualiza la UI."""
+            while not stop_monitoring.is_set():
+                try:
+                    # Obtener update de la cola (non-blocking)
+                    update = progress_queue.get_nowait()
+
+                    # Actualizar UI según la fase
+                    if update.phase in (ProgressPhase.MODEL_DOWNLOAD, ProgressPhase.MODEL_LOADING):
+                        # Carga de modelo: 0-30%
+                        base_pct = (update.current / max(update.total, 1)) * 30
+                        local_state['progress_bar_fill'].style(f'width: {base_pct:.0f}%')
+                        local_state['loading_message'].set_text(update.message)
+                        local_state['progress_text'].set_text(f'{base_pct:.0f}%')
+
+                    elif update.phase == ProgressPhase.MODEL_READY:
+                        local_state['progress_bar_fill'].style('width: 30%')
+                        local_state['loading_message'].set_text('Modelo cargado')
+                        local_state['progress_text'].set_text('30%')
+
+                    elif update.phase == ProgressPhase.PIPELINE_START:
+                        local_state['progress_bar_fill'].style('width: 30%')
+                        local_state['loading_message'].set_text(update.message)
+
+                    elif update.phase == ProgressPhase.PIPELINE_STEP:
+                        # Pasos del pipeline: 30-90%
+                        step_pct = 30 + (update.current / max(update.total, 1)) * 60
+                        local_state['progress_bar_fill'].style(f'width: {step_pct:.0f}%')
+                        local_state['loading_message'].set_text(update.message)
+                        local_state['progress_text'].set_text(f'{step_pct:.0f}%')
+
+                    elif update.phase == ProgressPhase.PIPELINE_COMPLETE:
+                        local_state['progress_bar_fill'].style('width: 90%')
+                        local_state['loading_message'].set_text('Finalizando...')
+                        local_state['progress_text'].set_text('90%')
+
+                    elif update.phase == ProgressPhase.ENTRY_START:
+                        # Múltiples entradas: mostrar progreso de entrada
+                        entry_pct = 30 + (update.current / max(update.total, 1)) * 60
+                        local_state['progress_bar_fill'].style(f'width: {entry_pct:.0f}%')
+                        local_state['loading_message'].set_text(update.message)
+                        local_state['progress_text'].set_text(f'{update.current}/{update.total}')
+
+                    elif update.phase == ProgressPhase.ENTRY_COMPLETE:
+                        entry_pct = 30 + (update.current / max(update.total, 1)) * 60
+                        local_state['progress_bar_fill'].style(f'width: {entry_pct:.0f}%')
+                        local_state['progress_text'].set_text(f'{update.current}/{update.total}')
+
+                except queue.Empty:
+                    pass
+
+                # Pequeña pausa para no consumir CPU
+                await asyncio.sleep(0.1)
+
+        # Iniciar monitoreo de progreso
+        monitor_task = asyncio.create_task(monitor_progress())
 
         try:
             steps = build_steps_from_config()
@@ -3219,7 +3916,7 @@ def pipeline_page():
             request = PipelineRequest(steps=steps, global_references={})
 
             PipelineUseCase = _get_pipeline_use_case()
-            use_case = PipelineUseCase(state.model)
+            use_case = PipelineUseCase(state.model, progress_callback=progress_callback)
 
             if has_data_entries:
                 # Convertir input_values (column-based) a entries (row-based) para el backend
@@ -3232,6 +3929,9 @@ def pipeline_page():
                         entry[field] = vals[i] if i < len(vals) else ''
                     data_entries.append(entry)
 
+                # Actualizar mensaje de loading
+                local_state['loading_message'].set_text(f'Procesando {len(data_entries)} entradas...')
+
                 # Modo múltiple: ejecutar para cada entrada de datos
                 response = await run.io_bound(
                     use_case.execute_with_references,
@@ -3239,146 +3939,330 @@ def pipeline_page():
                     data_entries
                 )
                 elapsed = (datetime.now() - t0).total_seconds()
+
+                # Completar barra de progreso
+                local_state['progress_bar_fill'].style('width: 100%')
+                local_state['progress_text'].set_text('100%')
+
+                # === TRANSICIÓN DE ESTADO: loading → results ===
+                local_state['loading_state'].set_visibility(False)
+                local_state['results_state'].set_visibility(True)
                 show_results(response, elapsed)
                 ui.notify(f'Completado: {response.successful_entries}/{response.total_entries}', type='positive')
             else:
+                # Actualizar mensaje de loading
+                local_state['loading_message'].set_text('Ejecutando pipeline...')
+
                 # Modo único: ejecutar una sola vez sin datos de entrada
                 response = await run.io_bound(
                     use_case._execute,
                     request
                 )
                 elapsed = (datetime.now() - t0).total_seconds()
+
+                # Completar barra de progreso
+                local_state['progress_bar_fill'].style('width: 100%')
+                local_state['progress_text'].set_text('100%')
+
+                # === TRANSICIÓN DE ESTADO: loading → results ===
+                local_state['loading_state'].set_visibility(False)
+                local_state['results_state'].set_visibility(True)
                 show_single_result(response, elapsed)
                 ui.notify('Pipeline ejecutado correctamente', type='positive')
 
         except Exception as ex:
+            # === TRANSICIÓN DE ESTADO: loading → error (dentro de results) ===
+            local_state['loading_state'].set_visibility(False)
+            local_state['results_state'].set_visibility(True)
             ui.notify(f'Error: {str(ex)[:100]}', type='negative')
-            with results_container:
-                with ui.row().classes('items-center gap-2 p-4 bg-red-900/20 rounded-lg'):
-                    ui.icon('error', size='sm').classes('text-red-400')
-                    ui.label(f'Error: {str(ex)}').classes('text-red-300 text-sm')
+            show_error_result(str(ex))
+
         finally:
-            run_btn.enable()
-            loading_box.set_visibility(False)
+            # Detener monitoreo de progreso
+            stop_monitoring.set()
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+    def reset_to_ready_state():
+        """Vuelve al estado inicial para ejecutar de nuevo."""
+        local_state['ready_state'].set_visibility(True)
+        local_state['loading_state'].set_visibility(False)
+        local_state['results_state'].set_visibility(False)
+        results_container.clear()
+
+    def show_error_result(error_message: str):
+        """Muestra un error en el panel de resultados con mensajes amigables."""
+        results_container.clear()
+
+        # Detectar tipos de error comunes y dar mensajes amigables
+        friendly_title = 'Error en la ejecución'
+        friendly_msg = error_message[:150]
+        suggestion = None
+
+        error_lower = error_message.lower()
+        if 'gguf' in error_lower or 'unrecognized model' in error_lower:
+            friendly_title = 'Modelo no compatible'
+            friendly_msg = 'Este modelo no es compatible con el sistema.'
+            suggestion = 'Usa modelos estándar de HuggingFace (no GGUF/cuantizados). Ejemplo: Qwen/Qwen2.5-0.5B-Instruct'
+        elif 'connection' in error_lower or 'timeout' in error_lower:
+            friendly_title = 'Error de conexión'
+            friendly_msg = 'No se pudo conectar con el modelo.'
+            suggestion = 'Verifica tu conexión a internet y que el modelo exista en HuggingFace.'
+        elif 'out of memory' in error_lower or 'cuda' in error_lower:
+            friendly_title = 'Sin memoria suficiente'
+            friendly_msg = 'No hay memoria GPU/RAM suficiente para este modelo.'
+            suggestion = 'Prueba con un modelo más pequeño o cierra otras aplicaciones.'
+        elif 'token' in error_lower and 'auth' in error_lower:
+            friendly_title = 'Error de autenticación'
+            friendly_msg = 'Se requiere autenticación para este modelo.'
+            suggestion = 'Algunos modelos requieren aceptar licencia en HuggingFace.'
+
+        with results_container:
+            # Panel de error centrado
+            with ui.column().classes('w-full items-center justify-center py-8 px-6 gap-4'):
+                # Icono de error
+                with ui.element('div').classes(
+                    'w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 '
+                    'flex items-center justify-center'
+                ):
+                    ui.icon('error_outline', size='lg').classes('text-red-400')
+
+                # Mensaje amigable
+                ui.label(friendly_title).classes('text-lg font-medium text-red-300')
+                ui.label(friendly_msg).classes('text-sm text-slate-400 text-center max-w-md')
+
+                # Sugerencia (si hay)
+                if suggestion:
+                    with ui.element('div').classes('flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 max-w-md'):
+                        ui.icon('lightbulb', size='xs').classes('text-amber-400 mt-0.5')
+                        ui.label(suggestion).classes('text-xs text-amber-200')
+
+                # Botón para reintentar
+                with ui.button('Intentar de nuevo', icon='refresh', on_click=reset_to_ready_state).props('outline').classes('mt-2'):
+                    pass
 
     def show_single_result(response, elapsed: float):
         """Muestra el resultado de una ejecución única del pipeline."""
         results_container.clear()
         with results_container:
-            ui.label('Resultado').classes('text-xl font-semibold mb-4')
+            # === HEADER DE ÉXITO ===
+            with ui.row().classes('w-full items-center justify-between p-4 bg-emerald-500/10 border-b border-emerald-500/20'):
+                with ui.row().classes('items-center gap-3'):
+                    with ui.element('div').classes(
+                        'w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center'
+                    ):
+                        ui.icon('check_circle', size='sm').classes('text-emerald-400')
+                    with ui.column().classes('gap-0'):
+                        ui.label('Pipeline completado').classes('text-base font-semibold text-emerald-300')
+                        ui.label(f'{len(response.step_results)} pasos ejecutados en {elapsed:.1f}s').classes('text-xs text-slate-400')
 
-            # Métricas simples
-            with ui.row().classes('gap-3 mb-4 flex-wrap'):
-                metrics = [
-                    ('Pasos', str(len(response.step_results)), 'text-slate-200'),
-                    ('Tiempo', f'{elapsed:.1f}s', 'text-amber-400'),
-                ]
-                for label, value, color in metrics:
-                    with ui.column().classes('metric-box'):
-                        ui.label(value).classes(f'metric-value {color}')
-                        ui.label(label).classes('metric-label')
+                # Acciones del header
+                with ui.row().classes('items-center gap-2'):
+                    def do_export():
+                        export = {
+                            'timestamp': datetime.now().isoformat(),
+                            'model': state.model,
+                            'steps': len(response.step_results),
+                            'time': elapsed,
+                            'results': response.step_results
+                        }
+                        ui.download(
+                            json.dumps(export, indent=2, ensure_ascii=False, default=str).encode('utf-8'),
+                            f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+                        )
+                    ui.button(icon='download', on_click=do_export).props('flat dense').classes(
+                        'text-slate-400 hover:text-emerald-400'
+                    ).tooltip('Exportar JSON')
+                    ui.button(icon='refresh', on_click=reset_to_ready_state).props('flat dense').classes(
+                        'text-slate-400 hover:text-emerald-400'
+                    ).tooltip('Ejecutar de nuevo')
 
-            # Confirmados vs a revisar
-            confirmed = response.verification_references.get('confirmed', [])
-            to_verify = response.verification_references.get('to_verify', [])
+            # === CONTENIDO DE RESULTADOS ===
+            with ui.column().classes('w-full p-4 gap-4'):
+                # Métricas en fila
+                with ui.row().classes('gap-3 flex-wrap'):
+                    for label, value, color, icon_name in [
+                        ('Pasos', str(len(response.step_results)), 'emerald', 'route'),
+                        ('Tiempo', f'{elapsed:.1f}s', 'amber', 'schedule'),
+                    ]:
+                        with ui.element('div').classes(f'flex items-center gap-2 px-3 py-2 rounded-lg bg-{color}-500/10 border border-{color}-500/20'):
+                            ui.icon(icon_name, size='xs').classes(f'text-{color}-400')
+                            ui.label(value).classes(f'text-sm font-semibold text-{color}-300')
+                            ui.label(label).classes('text-xs text-slate-400')
 
-            if confirmed or to_verify:
-                with ui.row().classes('gap-4 mb-4'):
-                    with ui.column().classes('flex-1 p-3 bg-emerald-900/20 rounded-lg border border-emerald-500/30'):
-                        with ui.row().classes('items-center gap-2 mb-2'):
-                            ui.icon('check_circle', size='sm').classes('text-emerald-400')
-                            ui.label(f'Confirmados ({len(confirmed)})').classes('text-emerald-300 font-medium')
-                        for ref in confirmed[:5]:
-                            ui.label(str(ref)[:100] + ('...' if len(str(ref)) > 100 else '')).classes('text-xs text-slate-400')
+                # Verificación (si hay datos)
+                confirmed = response.verification_references.get('confirmed', [])
+                to_verify = response.verification_references.get('to_verify', [])
 
-                    with ui.column().classes('flex-1 p-3 bg-amber-900/20 rounded-lg border border-amber-500/30'):
-                        with ui.row().classes('items-center gap-2 mb-2'):
-                            ui.icon('pending', size='sm').classes('text-amber-400')
-                            ui.label(f'A revisar ({len(to_verify)})').classes('text-amber-300 font-medium')
-                        for ref in to_verify[:5]:
-                            ui.label(str(ref)[:100] + ('...' if len(str(ref)) > 100 else '')).classes('text-xs text-slate-400')
+                if confirmed or to_verify:
+                    with ui.row().classes('gap-3 w-full'):
+                        # Confirmados
+                        with ui.element('div').classes(
+                            'flex-1 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20'
+                        ):
+                            with ui.row().classes('items-center gap-2 mb-2'):
+                                ui.icon('verified', size='xs').classes('text-emerald-400')
+                                ui.label(f'{len(confirmed)} confirmados').classes('text-sm font-medium text-emerald-300')
+                            if confirmed:
+                                for ref in confirmed[:3]:
+                                    ui.label(str(ref)[:80]).classes('text-xs text-slate-500 truncate')
+                                if len(confirmed) > 3:
+                                    ui.label(f'+{len(confirmed) - 3} más').classes('text-xs text-slate-500 italic')
 
-            # Mostrar resultados de cada paso
-            for step_idx, step_result in enumerate(response.step_results):
-                step_type = step_result.get('type', 'generate')
-                step_icons = {'generate': 'auto_awesome', 'parse': 'find_in_page', 'verify': 'verified'}
+                        # Por revisar
+                        with ui.element('div').classes(
+                            'flex-1 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20'
+                        ):
+                            with ui.row().classes('items-center gap-2 mb-2'):
+                                ui.icon('pending', size='xs').classes('text-amber-400')
+                                ui.label(f'{len(to_verify)} por revisar').classes('text-sm font-medium text-amber-300')
+                            if to_verify:
+                                for ref in to_verify[:3]:
+                                    ui.label(str(ref)[:80]).classes('text-xs text-slate-500 truncate')
+                                if len(to_verify) > 3:
+                                    ui.label(f'+{len(to_verify) - 3} más').classes('text-xs text-slate-500 italic')
 
-                with ui.expansion(f'Paso {step_idx + 1}: {step_type.capitalize()}', icon=step_icons.get(step_type, 'check')).classes('w-full bg-slate-800/30'):
-                    with ui.element('div').classes('p-3 bg-slate-900/50 rounded'):
-                        ui.label(json.dumps(step_result, indent=2, ensure_ascii=False, default=str)).classes('whitespace-pre font-mono text-xs text-slate-300')
+                # Detalles de cada paso (colapsable)
+                if response.step_results:
+                    with ui.expansion('Ver detalles de pasos', icon='code').classes('w-full').props('dense'):
+                        for step_idx, step_result in enumerate(response.step_results):
+                            step_type = step_result.get('type', 'generate')
+                            step_icons = {'generate': 'auto_awesome', 'parse': 'find_in_page', 'verify': 'verified'}
+
+                            with ui.element('div').classes('p-2 mb-2 rounded bg-slate-800/30 border border-slate-700/50'):
+                                with ui.row().classes('items-center gap-2 mb-1'):
+                                    ui.icon(step_icons.get(step_type, 'check'), size='xs').classes('text-slate-400')
+                                    ui.label(f'Paso {step_idx + 1}: {step_type}').classes('text-xs font-medium text-slate-300')
+                                ui.label(json.dumps(step_result, indent=2, ensure_ascii=False, default=str)[:500]).classes(
+                                    'whitespace-pre font-mono text-xs text-slate-500 overflow-auto max-h-32'
+                                )
 
     def show_results(response, elapsed: float):
-        """Muestra los resultados del pipeline."""
+        """Muestra los resultados del pipeline (múltiples entradas)."""
         results_container.clear()
+
+        # Calcular estadísticas
+        total = response.total_entries
+        successful = response.successful_entries
+        failed = response.failed_entries
+        success_rate = (successful / total * 100) if total > 0 else 0
+        is_success = failed == 0
+
         with results_container:
-            ui.label('Resultados').classes('text-xl font-semibold mb-4')
+            # === HEADER DE RESULTADOS ===
+            header_bg = 'bg-emerald-500/10 border-emerald-500/20' if is_success else 'bg-amber-500/10 border-amber-500/20'
+            header_icon_bg = 'bg-emerald-500/20' if is_success else 'bg-amber-500/20'
+            header_icon_color = 'text-emerald-400' if is_success else 'text-amber-400'
+            header_text_color = 'text-emerald-300' if is_success else 'text-amber-300'
 
-            # Métricas
-            with ui.row().classes('gap-3 mb-4 flex-wrap'):
-                metrics = [
-                    ('Total', str(response.total_entries), 'text-slate-200'),
-                    ('Exitosos', str(response.successful_entries), 'text-green-400'),
-                    ('Fallidos', str(response.failed_entries), 'text-red-400'),
-                ]
-                if response.total_entries > 0:
-                    pct = response.successful_entries / response.total_entries
-                    metrics.append(('Tasa', f'{pct:.0%}', 'text-indigo-400'))
-                metrics.append(('Tiempo', f'{elapsed:.1f}s', 'text-amber-400'))
+            with ui.row().classes(f'w-full items-center justify-between p-4 {header_bg} border-b'):
+                with ui.row().classes('items-center gap-3'):
+                    with ui.element('div').classes(f'w-10 h-10 rounded-xl {header_icon_bg} flex items-center justify-center'):
+                        icon_name = 'check_circle' if is_success else 'warning'
+                        ui.icon(icon_name, size='sm').classes(header_icon_color)
+                    with ui.column().classes('gap-0'):
+                        status_text = 'Procesamiento completado' if is_success else f'Completado con {failed} errores'
+                        ui.label(status_text).classes(f'text-base font-semibold {header_text_color}')
+                        ui.label(f'{total} entradas procesadas en {elapsed:.1f}s').classes('text-xs text-slate-400')
 
-                for label, value, color in metrics:
-                    with ui.column().classes('metric-box'):
-                        ui.label(value).classes(f'metric-value {color}')
-                        ui.label(label).classes('metric-label')
+                # Acciones del header
+                confirmed = response.verification_references.get('confirmed', [])
+                to_verify = response.verification_references.get('to_verify', [])
 
-            # Confirmados vs a revisar
-            confirmed = response.verification_references.get('confirmed', [])
-            to_verify = response.verification_references.get('to_verify', [])
+                with ui.row().classes('items-center gap-2'):
+                    def do_export():
+                        export = {
+                            'timestamp': datetime.now().isoformat(),
+                            'model': state.model,
+                            'total': total,
+                            'successful': successful,
+                            'failed': failed,
+                            'success_rate': success_rate,
+                            'time': elapsed,
+                            'confirmed': confirmed,
+                            'to_verify': to_verify,
+                            'results': response.step_results[:50] if response.step_results else []
+                        }
+                        ui.download(
+                            json.dumps(export, indent=2, ensure_ascii=False).encode('utf-8'),
+                            f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+                        )
+                    ui.button(icon='download', on_click=do_export).props('flat dense').classes(
+                        'text-slate-400 hover:text-emerald-400'
+                    ).tooltip('Exportar JSON')
+                    ui.button(icon='refresh', on_click=reset_to_ready_state).props('flat dense').classes(
+                        'text-slate-400 hover:text-emerald-400'
+                    ).tooltip('Ejecutar de nuevo')
 
-            if confirmed or to_verify:
-                with ui.row().classes('gap-4 mb-4'):
-                    with ui.column().classes('flex-1 p-3 bg-emerald-900/20 rounded-lg border border-emerald-500/30'):
-                        with ui.row().classes('items-center gap-2 mb-2'):
-                            ui.icon('check_circle', size='sm').classes('text-emerald-400')
-                            ui.label(f'{len(confirmed)} Confirmados').classes('font-medium text-emerald-300')
+            # === MÉTRICAS PRINCIPALES ===
+            with ui.column().classes('w-full p-4 gap-4'):
+                with ui.row().classes('gap-3 flex-wrap justify-center'):
+                    # Total
+                    with ui.element('div').classes('flex flex-col items-center px-5 py-3 rounded-xl bg-slate-500/10 border border-slate-500/20 min-w-24'):
+                        ui.label(str(total)).classes('text-2xl font-bold text-slate-200')
+                        ui.label('Total').classes('text-xs text-slate-400 uppercase')
 
-                    with ui.column().classes('flex-1 p-3 bg-amber-900/20 rounded-lg border border-amber-500/30'):
-                        with ui.row().classes('items-center gap-2 mb-2'):
-                            ui.icon('pending', size='sm').classes('text-amber-400')
-                            ui.label(f'{len(to_verify)} Por revisar').classes('font-medium text-amber-300')
+                    # Exitosos
+                    with ui.element('div').classes('flex flex-col items-center px-5 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 min-w-24'):
+                        ui.label(str(successful)).classes('text-2xl font-bold text-emerald-400')
+                        ui.label('Exitosos').classes('text-xs text-slate-400 uppercase')
 
-            # Detalles
-            if response.step_results:
-                with ui.expansion('Ver detalles', icon='visibility').classes('w-full'):
-                    for i, sr in enumerate(response.step_results[:20]):
-                        stype = sr.get('step_type', '?')
-                        sdata = sr.get('step_data', [])
-                        with ui.column().classes('p-3 bg-slate-800/50 rounded mb-2'):
-                            with ui.row().classes('items-center gap-2 mb-1'):
-                                ui.label(f'#{i+1}').classes('text-xs text-slate-400')
-                                ui.label(stype).classes('status-pill pill-info')
-                            if sdata:
-                                txt = str(sdata[0])[:300]
-                                ui.label(txt + ('...' if len(str(sdata[0])) > 300 else '')).classes('text-xs text-slate-400 font-mono')
+                    # Fallidos
+                    with ui.element('div').classes('flex flex-col items-center px-5 py-3 rounded-xl bg-red-500/10 border border-red-500/20 min-w-24'):
+                        ui.label(str(failed)).classes('text-2xl font-bold text-red-400')
+                        ui.label('Fallidos').classes('text-xs text-slate-400 uppercase')
 
-            # Exportar
-            def do_export():
-                export = {
-                    'timestamp': datetime.now().isoformat(),
-                    'model': state.model,
-                    'total': response.total_entries,
-                    'successful': response.successful_entries,
-                    'failed': response.failed_entries,
-                    'time': elapsed,
-                    'confirmed': confirmed,
-                    'to_verify': to_verify,
-                    'results': response.step_results[:50] if response.step_results else []
-                }
-                ui.download(
-                    json.dumps(export, indent=2, ensure_ascii=False).encode('utf-8'),
-                    f'pipeline_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-                )
+                    # Tasa de éxito
+                    with ui.element('div').classes('flex flex-col items-center px-5 py-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 min-w-24'):
+                        ui.label(f'{success_rate:.0f}%').classes('text-2xl font-bold text-indigo-400')
+                        ui.label('Tasa').classes('text-xs text-slate-400 uppercase')
 
-            ui.button('Exportar JSON', icon='download', on_click=do_export).props('flat').classes('mt-3')
+                    # Tiempo
+                    with ui.element('div').classes('flex flex-col items-center px-5 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 min-w-24'):
+                        ui.label(f'{elapsed:.1f}s').classes('text-2xl font-bold text-amber-400')
+                        ui.label('Tiempo').classes('text-xs text-slate-400 uppercase')
+
+                # === VERIFICACIÓN ===
+                if confirmed or to_verify:
+                    with ui.row().classes('gap-3 w-full'):
+                        # Confirmados
+                        with ui.element('div').classes(
+                            'flex-1 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20'
+                        ):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('verified', size='xs').classes('text-emerald-400')
+                                ui.label(f'{len(confirmed)} confirmados').classes('text-sm font-medium text-emerald-300')
+
+                        # Por revisar
+                        with ui.element('div').classes(
+                            'flex-1 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20'
+                        ):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.icon('pending', size='xs').classes('text-amber-400')
+                                ui.label(f'{len(to_verify)} por revisar').classes('text-sm font-medium text-amber-300')
+
+                # === DETALLES (colapsable) ===
+                if response.step_results:
+                    with ui.expansion(f'Ver {len(response.step_results)} resultados detallados', icon='list').classes('w-full').props('dense'):
+                        for i, sr in enumerate(response.step_results[:20]):
+                            stype = sr.get('step_type', '?')
+                            sdata = sr.get('step_data', [])
+                            with ui.element('div').classes('p-2 mb-2 rounded bg-slate-800/30 border border-slate-700/50'):
+                                with ui.row().classes('items-center gap-2 mb-1'):
+                                    ui.label(f'#{i+1}').classes('text-xs font-mono text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded')
+                                    ui.label(stype).classes('text-xs font-medium text-slate-300 bg-indigo-500/20 px-2 py-0.5 rounded')
+                                if sdata:
+                                    txt = str(sdata[0])[:200]
+                                    ui.label(txt + ('...' if len(str(sdata[0])) > 200 else '')).classes(
+                                        'text-xs text-slate-500 font-mono'
+                                    )
+                        if len(response.step_results) > 20:
+                            ui.label(f'... y {len(response.step_results) - 20} más (exportar para ver todos)').classes(
+                                'text-xs text-slate-500 italic text-center py-2'
+                            )
 
     # === LAYOUT PRINCIPAL ===
     with ui.column().classes('w-full max-w-6xl mx-auto gap-4 p-6'):
@@ -3451,17 +4335,17 @@ def pipeline_page():
                     ui.icon('check', size='xs').classes('text-purple-400')
 
         # Sección: Variables de Entrada (compacta, con toggle)
-        with ui.card().classes('w-full bg-slate-800/30 border border-purple-500/20 px-4 py-3'):
+        with ui.card().props('flat').classes('w-full bg-slate-800/30 border border-purple-500/20 px-4 py-3'):
             data_container = ui.column().classes('w-full')
             entries_counter_label = None  # Ya no se usa, el contador está integrado en render_data_section
             with data_container:
                 render_data_section()
 
         # Sección: Constructor de Pipeline - Layout 2 columnas (púrpura - paso 2 Configura)
-        with ui.card().classes('w-full bg-slate-800/30 border border-purple-500/20 p-4'):
+        with ui.card().props('flat').classes('w-full bg-slate-800/30 border border-purple-500/20 p-4'):
             with ui.row().classes('w-full justify-between items-center mb-1'):
                 with ui.row().classes('items-center gap-2'):
-                    with ui.element('div').classes('w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center pt-1'):
+                    with ui.element('div').classes('w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center'):
                         ui.icon('build', size='xs').classes('text-purple-400')
                     with ui.column().classes('gap-0'):
                         ui.label('Constructor de Pipeline').classes('text-base font-semibold text-purple-300')
@@ -3487,7 +4371,10 @@ def pipeline_page():
                 model_selector_state = {'editing': not bool(state.model)}
 
                 # Contenedor principal del selector
-                model_selector_container = ui.column().classes('w-full')
+                model_selector_container = ui.column().classes('w-full').props('id="model-selector-section"')
+
+                # Guardar referencia global para acceso desde run_pipeline
+                model_selector_ref['container'] = model_selector_container
 
                 # Referencias compartidas
                 model_input_local = {'ref': None}
@@ -3504,6 +4391,9 @@ def pipeline_page():
                     """Cambia a vista de modelo seleccionado."""
                     model_selector_state['editing'] = False
                     render_model_selector()
+                    # Actualizar checklist de ejecución si existe
+                    if 'update_execution_checklist' in local_state and local_state['update_execution_checklist']:
+                        local_state['update_execution_checklist']()
 
                 async def switch_to_editing_view():
                     """Cambia a vista de edición/selección."""
@@ -3517,6 +4407,9 @@ def pipeline_page():
                         if inp.value:
                             length = len(inp.value)
                             inp.run_method('setSelectionRange', length, length)
+
+                # Guardar referencia a la función para acceso desde run_pipeline
+                model_selector_ref['switch_to_edit'] = switch_to_editing_view
 
                 def apply_local_model():
                     """Aplica la ruta del modelo local."""
@@ -3783,7 +4676,7 @@ def pipeline_page():
                                 ):
                                     with ui.row().classes('items-center gap-2'):
                                         ui.icon('folder_open', size='xs').classes('text-purple-400')
-                                        ui.label('Modelo Local').classes('text-xs text-slate-300')
+                                        ui.label('Modelo Local').classes('text-xs text-slate-300 leading-none')
                         else:
                             # Vista de modelo seleccionado
                             # Determinar estilo según compatibilidad
@@ -3873,20 +4766,147 @@ def pipeline_page():
                 with steps_list_container:
                     render_steps_accordion()
 
-        # Sección: Ejecutar (emerald oscuro - paso 3 - CTA principal)
-        with ui.row().classes('w-full justify-center gap-4 mt-2'):
-            run_btn = ui.button('Ejecutar Pipeline', icon='play_arrow', on_click=run_pipeline).props('unelevated size=lg')
-            run_btn.style('background: linear-gradient(135deg, #0f4342, #0d3a39) !important; color: #6ee7b7 !important; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.5); padding: 12px 32px !important; font-size: 16px !important;')
+        # =================================================================
+        # SECCIÓN DE EJECUCIÓN Y RESULTADOS (Rediseño UX Profesional)
+        # =================================================================
+        # Panel unificado con 3 estados: ready → loading → results
 
-        # Loading (verde - paso 3 Ejecuta)
-        with ui.row().classes('loading-box items-center gap-3 justify-center') as lb:
-            loading_box = lb
-            loading_box.set_visibility(False)
-            ui.spinner('dots', size='lg').classes('text-emerald-400')
-            ui.label('Ejecutando pipeline...').classes('text-slate-300')
+        def get_pipeline_status_summary():
+            """Obtiene un resumen del estado actual del pipeline."""
+            num_steps = len(local_state['steps'])
+            has_model = bool(state.model)
+            input_values = local_state.get('input_values', {})
+            fields = local_state.get('input_fields', [])
+            input_vars_enabled = local_state.get('input_vars_enabled', False)
+            num_entries = 0
+            # Solo contar entradas si las variables de entrada están habilitadas
+            if input_vars_enabled and input_values and fields:
+                num_entries = max((len(v) for v in input_values.values()), default=0)
+            return {
+                'steps': num_steps,
+                'has_model': has_model,
+                'model_name': state.model if has_model else None,
+                'entries': num_entries,
+                'is_ready': num_steps > 0 and has_model
+            }
 
-        # Resultados
-        results_container = ui.column().classes('w-full')
+        # Card principal (mismo estilo que Constructor de Pipeline)
+        with ui.card().props('flat').classes('w-full bg-slate-800/30 border border-emerald-500/20 p-4'):
+            # Header dentro de la caja
+            with ui.row().classes('w-full justify-between items-center mb-4'):
+                with ui.row().classes('items-center gap-2'):
+                    with ui.element('div').classes('w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center'):
+                        ui.icon('play_circle', size='xs').classes('text-emerald-400')
+                    with ui.column().classes('gap-0'):
+                        ui.label('Ejecutar Pipeline').classes('text-base font-semibold text-emerald-300')
+                        execution_subtitle = ui.label('Configura el pipeline para ejecutar').classes('text-xs text-slate-400')
+
+            # --- ESTADO: LISTO PARA EJECUTAR ---
+            ready_state = ui.column().classes('w-full gap-4')
+            with ready_state:
+                config_checklist = ui.column().classes('w-full gap-2 p-4 rounded-lg bg-slate-900/50 border border-slate-700/50')
+
+                def update_config_checklist():
+                    """Actualiza la checklist de configuración."""
+                    status = get_pipeline_status_summary()
+                    config_checklist.clear()
+                    with config_checklist:
+                        # Modelo
+                        with ui.row().classes('items-center gap-3'):
+                            if status['has_model']:
+                                ui.icon('check_circle', size='xs').classes('text-emerald-400')
+                                model_display = status['model_name']
+                                if len(model_display) > 100:
+                                    model_display = model_display[:97] + '...'
+                                ui.label(f'Modelo: {model_display}').classes('text-sm text-slate-300')
+                            else:
+                                ui.icon('radio_button_unchecked', size='xs').classes('text-slate-500')
+                                ui.label('Modelo: No seleccionado').classes('text-sm text-slate-500')
+
+                        # Pasos
+                        with ui.row().classes('items-center gap-3'):
+                            if status['steps'] > 0:
+                                ui.icon('check_circle', size='xs').classes('text-emerald-400')
+                                ui.label(f'Pipeline: {status["steps"]} paso{"s" if status["steps"] != 1 else ""} configurado{"s" if status["steps"] != 1 else ""}').classes('text-sm text-slate-300')
+                            else:
+                                ui.icon('radio_button_unchecked', size='xs').classes('text-slate-500')
+                                ui.label('Pipeline: Sin pasos configurados').classes('text-sm text-slate-500')
+
+                        # Datos de entrada
+                        with ui.row().classes('items-center gap-3'):
+                            if status['entries'] > 0:
+                                ui.icon('check_circle', size='xs').classes('text-emerald-400')
+                                ui.label(f'Variables: {status["entries"]} entrada{"s" if status["entries"] != 1 else ""}').classes('text-sm text-slate-300')
+                            else:
+                                ui.icon('info', size='xs').classes('text-slate-500')
+                                ui.label('Sin variables establecidas (ejecución simple)').classes('text-sm text-slate-500 italic')
+
+                    # Actualizar subtítulo
+                    if status['is_ready']:
+                        if status['entries'] > 0:
+                            execution_subtitle.set_text(f'Listo para procesar {status["entries"]} entrada{"s" if status["entries"] != 1 else ""}')
+                        else:
+                            execution_subtitle.set_text('Listo para ejecutar')
+                    else:
+                        missing = []
+                        if not status['has_model']:
+                            missing.append('modelo')
+                        if status['steps'] == 0:
+                            missing.append('pasos')
+                        execution_subtitle.set_text(f'Falta: {", ".join(missing)}')
+
+                update_config_checklist()
+                local_state['update_execution_checklist'] = update_config_checklist
+
+                # Botón CTA principal
+                with ui.row().classes('w-full justify-center pt-2'):
+                    run_btn = ui.button('Ejecutar Pipeline', icon='play_arrow', on_click=run_pipeline).props('unelevated size=lg')
+                    run_btn.style(
+                        'background: linear-gradient(135deg, #059669, #047857) !important; '
+                        'color: white !important; font-weight: 600; '
+                        'border: none; padding: 14px 40px !important; font-size: 16px !important; '
+                        'border-radius: 12px !important; box-shadow: 0 4px 14px rgba(5, 150, 105, 0.4) !important;'
+                    )
+                    run_btn.classes('hover:scale-105 transition-transform')
+
+            # --- ESTADO: EJECUTANDO ---
+            loading_state = ui.column().classes('w-full gap-4 py-2')
+            loading_state.set_visibility(False)
+            with loading_state:
+                with ui.row().classes('items-center gap-3'):
+                    ui.spinner('dots', size='md').classes('text-emerald-400')
+                    with ui.column().classes('gap-0 flex-1'):
+                        loading_title = ui.label('Ejecutando pipeline...').classes('text-base font-medium text-emerald-300')
+                        loading_message = ui.label('Iniciando proceso...').classes('text-sm text-slate-400')
+
+                with ui.column().classes('w-full gap-1'):
+                    progress_bar_container = ui.element('div').classes('w-full h-2 bg-slate-700 rounded-full overflow-hidden')
+                    with progress_bar_container:
+                        progress_bar_fill = ui.element('div').classes(
+                            'h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-300'
+                        ).style('width: 0%;')
+                    progress_text = ui.label('').classes('text-xs text-slate-500 text-right')
+
+                intermediate_results = ui.column().classes('w-full gap-2 max-h-48 overflow-y-auto')
+
+                local_state['loading_title'] = loading_title
+                local_state['progress_bar_fill'] = progress_bar_fill
+                local_state['progress_text'] = progress_text
+                local_state['intermediate_results'] = intermediate_results
+
+            # --- ESTADO: RESULTADOS ---
+            results_state = ui.column().classes('w-full')
+            results_state.set_visibility(False)
+            results_container = ui.column().classes('w-full')
+
+        # Guardar referencias en local_state
+        local_state['ready_state'] = ready_state
+        local_state['loading_state'] = loading_state
+        local_state['results_state'] = results_state
+        local_state['loading_message'] = loading_message
+        local_state['execution_subtitle'] = execution_subtitle
+
+        loading_box = loading_state
 
 
 # =============================================================================

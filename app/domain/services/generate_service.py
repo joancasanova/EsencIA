@@ -11,11 +11,16 @@ Este servicio implementa la filosofia de EsencIA de ejecucion local:
 import logging
 import re
 import socket
-from typing import List, Optional
+from typing import Callable, List, Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datetime import datetime
 from domain.model.entities.generation import GeneratedResult, GenerationMetadata
+from domain.model.entities.progress import (
+    ProgressCallback,
+    ProgressUpdate,
+    ProgressPhase
+)
 from config.settings import validate_temperature, validate_max_tokens
 from infrastructure.system_resources import (
     ModelCompatibilityChecker,
@@ -85,13 +90,19 @@ class GenerateService:
         y sugerencias de modelos alternativos si es necesario.
     """
 
-    def __init__(self, model_name: str, skip_resource_check: bool = False):
+    def __init__(
+        self,
+        model_name: str,
+        skip_resource_check: bool = False,
+        progress_callback: Optional[ProgressCallback] = None
+    ):
         """
         Initialize text generation service.
 
         Args:
             model_name: Hugging Face model identifier or local path
             skip_resource_check: Skip pre-validation of resources (not recommended)
+            progress_callback: Optional callback para reportar progreso de carga
 
         Raises:
             ValueError: If model_name is invalid
@@ -107,6 +118,7 @@ class GenerateService:
 
         self.model_name = model_name
         self.instruct_mode = "instruct" in model_name.lower()
+        self._progress_callback = progress_callback
 
         # Pre-validate resources before attempting to load model
         if not skip_resource_check:
@@ -123,6 +135,14 @@ class GenerateService:
             socket.setdefaulttimeout(MODEL_DOWNLOAD_TIMEOUT)
 
             try:
+                # Report: Starting tokenizer download
+                self._report_progress(
+                    ProgressPhase.MODEL_DOWNLOAD,
+                    current=0, total=3,
+                    message="Descargando tokenizador...",
+                    details=model_name
+                )
+
                 # Initialize tokenizer and model
                 # SECURITY: trust_remote_code=False prevents execution of arbitrary code from model repos
                 logger.debug("Loading tokenizer...")
@@ -131,10 +151,26 @@ class GenerateService:
                     trust_remote_code=False
                 )
 
+                # Report: Starting model download
+                self._report_progress(
+                    ProgressPhase.MODEL_DOWNLOAD,
+                    current=1, total=3,
+                    message="Descargando modelo...",
+                    details=model_name
+                )
+
                 logger.debug("Loading model...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     trust_remote_code=False
+                )
+
+                # Report: Moving to device
+                self._report_progress(
+                    ProgressPhase.MODEL_LOADING,
+                    current=2, total=3,
+                    message=f"Cargando en {self.device.upper()}...",
+                    details=model_name
                 )
 
                 # Move model to device with CUDA OOM handling
@@ -143,6 +179,14 @@ class GenerateService:
 
                 # Set model to evaluation mode
                 self.model.eval()
+
+                # Report: Ready
+                self._report_progress(
+                    ProgressPhase.MODEL_READY,
+                    current=3, total=3,
+                    message="Modelo listo",
+                    details=model_name
+                )
 
                 logger.info(f"Successfully loaded model on {self.device.upper()}")
             finally:
@@ -221,6 +265,37 @@ class GenerateService:
         # Log warnings if any
         for warning in result.warnings:
             logger.warning(f"Advertencia de recursos: {warning}")
+
+    def _report_progress(
+        self,
+        phase: ProgressPhase,
+        current: int,
+        total: int,
+        message: str,
+        details: Optional[str] = None
+    ) -> None:
+        """
+        Reporta progreso si hay un callback configurado.
+
+        Args:
+            phase: Fase actual del proceso
+            current: Valor actual
+            total: Valor total
+            message: Mensaje descriptivo
+            details: Detalles adicionales (ej: nombre del modelo)
+        """
+        if self._progress_callback:
+            update = ProgressUpdate(
+                phase=phase,
+                current=current,
+                total=total,
+                message=message,
+                details=details
+            )
+            try:
+                self._progress_callback(update)
+            except Exception as e:
+                logger.warning(f"Error en callback de progreso: {e}")
 
     def generate(
         self,
